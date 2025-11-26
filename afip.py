@@ -7,21 +7,22 @@ from pyafipws.wsfev1 import WSFEv1
 
 def test_afip_connection():
     """
-    Prueba WSAA + WSFE en producción usando Secret Files.
+    Prueba WSAA + WSFE en producción.
     """
 
     # =====================================
-    # 1. LEER ARCHIVOS REALES
+    # 1. OBTENER ARCHIVOS DESDE SECRET FILES
     # =====================================
-key_path = "/etc/secrets/afip_new.key"
-crt_path = "/etc/secrets/afip_new.crt"
+    key_path = "/etc/secrets/afip_new.key"
+    crt_path = "/etc/secrets/afip_new.crt"
 
     if not os.path.exists(key_path):
-        return {"error": "Archivo secreto afip.key NO existe en Render"}
+        return {"error": "Archivo secreto afip_new.key NO existe en Render"}
 
     if not os.path.exists(crt_path):
-        return {"error": "Archivo secreto afip.crt NO existe en Render"}
+        return {"error": "Archivo secreto afip_new.crt NO existe en Render"}
 
+    # Leer en binario (exacto)
     with open(key_path, "rb") as f:
         private_key = f.read()
 
@@ -31,77 +32,64 @@ crt_path = "/etc/secrets/afip_new.crt"
     cuit = os.environ.get("AFIP_CUIT")
     pto_vta = int(os.environ.get("AFIP_PTO_VTA", "1"))
 
-    if not cuit:
-        return {"error": "Variable AFIP_CUIT no definida"}
+    # =====================================
+    # 2. GENERAR CMS EN FORMATO BINARIO
+    # =====================================
+    cms = generar_cms_bytes(private_key, certificate)
 
     # =====================================
-    # 2. GENERAR CMS (DER binario)
-    # =====================================
-    try:
-        cms_der = generar_cms_bytes(private_key, certificate)
-    except Exception as e:
-        return {"error": f"Error generando CMS: {str(e)}"}
-
-    # =====================================
-    # 3. WSAA — LoginCMS
+    # 3. WSAA
     # =====================================
     wsaa = WSAA()
-    wsaa.HOMO = False  # producción AFIP
+    wsaa.HOMO = False  # producción
 
-    try:
-        # <-- Tu versión usa LoginCMS con CMS DER directo
-        ta = wsaa.LoginCMS(cms_der)
-    except Exception as e:
-        return {"error": f"Error LoginCMS(): {str(e)}"}
+    ta = wsaa.LoginCMS(cms)
 
     if wsaa.Excepcion:
-        return {"error": f"WSAA Excepcion: {wsaa.Excepcion}"}
+        return {"error": f"Error LoginCMS(): {wsaa.Excepcion}"}
 
     # =====================================
-    # 4. WSFE — último comprobante
+    # 4. WSFE
     # =====================================
     wsfe = WSFEv1()
-    wsfe.HOMO = False
     wsfe.Cuit = int(cuit)
     wsfe.Sign = wsaa.Sign
     wsfe.Token = wsaa.Token
+    wsfe.HOMO = False
 
     tipo_cbte = 11  # Factura C
-
-    try:
-        wsfe.CompUltimoAutorizado(tipo_cbte, pto_vta)
-    except Exception as e:
-        return {"error": f"Error en WSFE: {str(e)}"}
+    wsfe.CompUltimoAutorizado(tipo_cbte, pto_vta)
 
     if wsfe.ErrMsg:
-        return {"error": f"WSFE devolvió error: {wsfe.ErrMsg}"}
+        return {"error": wsfe.ErrMsg}
 
     return {
         "status": "ok",
-        "pto_vta": pto_vta,
         "ultimo": wsfe.CbteNro,
-        "token": wsaa.Token[:40] + "...",
-        "sign": wsaa.Sign[:40] + "..."
+        "token": wsaa.Token[:30] + "...",
+        "sign": wsaa.Sign[:30] + "..."
     }
 
 
 def generar_cms_bytes(private_key_bytes, certificate_bytes, service="wsfe"):
     """
-    Genera un CMS firmado en DER usando OpenSSL (compatible con pyafipws 2.7.x)
+    Genera CMS firmado — usando archivos binarios reales.
     """
 
     with tempfile.TemporaryDirectory() as tmp:
-        key_file = os.path.join(tmp, "afip.key")
-        crt_file = os.path.join(tmp, "afip.crt")
+        key_path = os.path.join(tmp, "afip.key")
+        crt_path = os.path.join(tmp, "afip.crt")
         xml_in = os.path.join(tmp, "req.xml")
         cms_out = os.path.join(tmp, "req.cms")
 
-        with open(key_file, "wb") as f:
+        # Guardar EXACTOS los archivos
+        with open(key_path, "wb") as f:
             f.write(private_key_bytes)
 
-        with open(crt_file, "wb") as f:
+        with open(crt_path, "wb") as f:
             f.write(certificate_bytes)
 
+        # Crear XML de requerimiento
         login_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <loginTicketRequest version="1.0">
   <header>
@@ -116,12 +104,13 @@ def generar_cms_bytes(private_key_bytes, certificate_bytes, service="wsfe"):
         with open(xml_in, "w", encoding="utf-8") as f:
             f.write(login_xml)
 
+        # Firmar CMS usando openssl
         cmd = [
             "openssl", "smime",
             "-sign",
             "-binary",
-            "-signer", crt_file,
-            "-inkey", key_file,
+            "-signer", crt_path,
+            "-inkey", key_path,
             "-in", xml_in,
             "-out", cms_out,
             "-outform", "DER",
@@ -132,7 +121,7 @@ def generar_cms_bytes(private_key_bytes, certificate_bytes, service="wsfe"):
 
         if res.returncode != 0:
             err = res.stderr.decode(errors="ignore")
-            raise Exception(f"OpenSSL error: {err}")
+            raise Exception(f"Error creando CMS: {err}")
 
         with open(cms_out, "rb") as f:
             return f.read()
