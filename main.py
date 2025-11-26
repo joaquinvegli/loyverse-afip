@@ -206,3 +206,26 @@ def debug_server_time():
         "afip_utc_minus3": now_utc_afip.strftime("%Y-%m-%d %H:%M:%S"),
         "diff_seconds": now_local.timestamp() - now_utc.timestamp(),
     }
+
+@app.get("/debug/wsaa_client")
+def debug_wsaa_client():
+    from pyafipws.wsaa import WSAA
+    import traceback
+    
+    wsaa = WSAA()
+    wsaa.HOMO = False  # producción
+
+    try:
+        wsaa.AnalizarWSDL()
+    except Exception as e:
+        return {
+            "error": f"No pudo cargar WSDL: {e}",
+            "trace": traceback.format_exc()
+        }
+
+    return {
+        "status": "ok",
+        "client_loaded": wsaa.client is not None,
+        "client_type": str(type(wsaa.client)),
+        "methods": dir(wsaa.client) if wsaa.client else None
+    }
