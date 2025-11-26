@@ -3,39 +3,41 @@ from pyafipws.wsaa import WSAA
 from pyafipws.wsfev1 import WSFEv1
 
 
-def facturar_prueba():
+# Rutas donde Render monta los Secret Files
+KEY_PATH = "/etc/secrets/afip.key"
+CRT_PATH = "/etc/secrets/afip.crt"
+
+
+def test_afip_connection():
     """
-    Prueba mínima de conexión: WSAA (token/sign) + WSFE (CAE).
-    Compatible con versiones antiguas de pyafipws.
+    Test mínimo de conexión WSAA + WSFE en producción
     """
 
-    cert = os.environ.get("AFIP_CERT_CRT")
-    key = os.environ.get("AFIP_CERT_KEY")
+    if not os.path.exists(KEY_PATH):
+        raise Exception(f"No existe la clave privada: {KEY_PATH}")
+
+    if not os.path.exists(CRT_PATH):
+        raise Exception(f"No existe el certificado: {CRT_PATH}")
+
     cuit = os.environ.get("AFIP_CUIT")
-    pto_vta = int(os.environ.get("AFIP_PTO_VTA", "1"))
-    alias = "default"
-
-    if not cert:
-        raise Exception("AFIP_CERT_CRT no está definida")
-
-    if not key:
-        raise Exception("AFIP_CERT_KEY no está definida")
-
     if not cuit:
-        raise Exception("AFIP_CUIT no está definida")
+        raise Exception("Falta la variable AFIP_CUIT")
 
-    # -------------------------
-    # WSAA – AUTENTICACIÓN
-    # -------------------------
+    # ============================
+    # WSAA - Autenticación
+    # ============================
     wsaa = WSAA()
-    wsaa.HOMO = False          # Siempre producción
+    wsaa.HOMO = False           # siempre producción
     wsaa.Production = True
 
-    # Método compatible con versiones antiguas:
-    # Autenticar(CRT, KEY, wsdl, ta)
-    ta = f"TA-{alias}.xml"
+    cert = open(CRT_PATH).read()
+    key = open(KEY_PATH).read()
 
-    wsaa.Autenticar(cert, key, "wsaa", ta)
+    wsaa.LoginCMS(
+        Certificado=cert,
+        PrivateKey=key,
+        Service="wsfe"
+    )
 
     if wsaa.Excepcion:
         raise Exception(f"WSAA Error: {wsaa.Excepcion}")
@@ -43,62 +45,28 @@ def facturar_prueba():
     token = wsaa.Token
     sign = wsaa.Sign
 
-    # -------------------------
-    # WSFE – FACTURACIÓN
-    # -------------------------
+    # ============================
+    # WSFE - Test básico
+    # ============================
     wsfe = WSFEv1()
     wsfe.HOMO = False
     wsfe.Production = True
-    wsfe.Cuit = int(cuit)
 
+    wsfe.Cuit = int(cuit)
     wsfe.Token = token
     wsfe.Sign = sign
 
-    tipo_cbte = 11  # Factura C
-    wsfe.CompUltimoAutorizado(tipo_cbte, pto_vta)
-    ultimo = wsfe.CbteNro
+    # solo obtener último comprobante autorizado para verificar permisos
+    punto_vta = int(os.environ.get("AFIP_PTO_VTA", "1"))
+    tipo_cbte = 11  # factura C
 
-    # -------------------------
-    # Factura de prueba
-    # -------------------------
-    nuevo = ultimo + 1
-
-    wsfe.Inicio = nuevo
-    wsfe.CantReg = 1
-    wsfe.Nro = nuevo
-
-    wsfe.Concepto = 1         # Producto
-    wsfe.TipoDoc = 99         # Consumidor Final
-    wsfe.NroDoc = 0
-    wsfe.FchCbte = wsfe.FechadeHoy()
-
-    wsfe.MonedaId = "PES"
-    wsfe.MonedaCotiz = 1
-
-    wsfe.ImpNeto = 1
-    wsfe.ImpIVA = 0
-    wsfe.ImpTrib = 0
-    wsfe.ImpOpEx = 0
-    wsfe.ImpTotal = 1
-
-    # Detalle mínimo
-    wsfe.Detalle = [{
-        "Qty": 1,
-        "Item": "Prueba API",
-        "ImpTotal": 1,
-    }]
-
-    wsfe.CAESolicitar()
-
-    if wsfe.Excepcion:
-        raise Exception(f"WSFE error: {wsfe.Excepcion}")
+    wsfe.CompUltimoAutorizado(tipo_cbte, punto_vta)
 
     if wsfe.ErrMsg:
-        raise Exception(f"AFIP devolvió error: {wsfe.ErrMsg}")
+        raise Exception(f"WSFE Error: {wsfe.ErrMsg}")
 
     return {
-        "resultado": wsfe.Resultado,
-        "cae": wsfe.CAE,
-        "vencimiento": wsfe.Vencimiento,
-        "numero": wsfe.Nro,
+        "estado": "OK",
+        "ultimo_cbte": wsfe.CbteNro,
+        "token_inicio": wsaa.Token[:40] + "..."
     }
