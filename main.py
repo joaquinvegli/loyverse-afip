@@ -6,12 +6,12 @@ app = FastAPI()
 
 @app.get("/")
 def root():
-    return {"status": "ok"}
+    return {"status": "ok", "message": "API funcionando"}
 
 @app.get("/test/afip")
 def test_afip():
     try:
         result = test_afip_connection()
-        return {"status": "ok", "afip": result}
+        return {"status": "ok", "data": result}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
