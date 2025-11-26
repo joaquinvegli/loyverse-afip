@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from loyverse import get_receipts, get_receipt
-from afip import test_afip_connection
+from afip import facturar_prueba
 
 app = FastAPI()
 
@@ -12,23 +12,23 @@ def root():
 @app.get("/test/loyverse")
 async def test_loyverse():
     try:
-        return {"status": "ok", "data": await get_receipts()}
+        data = await get_receipts()
+        return {"status": "ok", "data": data}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.get("/test/loyverse/{receipt_id}")
 async def test_receipt(receipt_id: str):
     try:
-        return {"status": "ok", "data": await get_receipt(receipt_id)}
+        data = await get_receipt(receipt_id)
+        return {"status": "ok", "data": data}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.get("/test/afip")
 def test_afip():
-    result = test_afip_connection()
-    return result
-
-@app.get("/debug/cert")
-def debug_cert():
-    import debug_env
-    return {"status": "ok"}
+    try:
+        result = facturar_prueba()
+        return {"status": "ok", "factura": result}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
