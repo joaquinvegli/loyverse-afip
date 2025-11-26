@@ -1,77 +1,68 @@
 import os
-import datetime
-import base64
-from M2Crypto import X509, SMIME, BIO
-from zeep import Client
+from pyafipws.wsaa import WSAA
+from pyafipws.wsfev1 import WSFEv1
 
-CUIT = int(os.getenv("AFIP_CUIT"))
-CERT_CRT = os.getenv("AFIP_CERT_CRT")
-CERT_KEY = os.getenv("AFIP_CERT_KEY")
-
-WSAA_WSDL = "https://wsaa.afip.gov.ar/ws/services/LoginCms?WSDL"
-WSFE_WSDL = "https://servicios1.afip.gov.ar/wsfev1/service.asmx?WSDL"
-
-
-def generar_TA():
+def facturar_prueba():
     """
-    Genera el Ticket de Acceso firmando el TRA con CMS PKCS7 (FORMATO CORRECTO PARA AFIP)
+    Genera una factura mínima para probar autenticación y WSFE.
+    NO crea facturas reales porque monto = 1 y es tipo prueba manual.
     """
 
-    # Armado del TRA
-    tra = f"""<?xml version="1.0" encoding="UTF-8"?>
-<loginTicketRequest version="1.0">
-  <header>
-    <uniqueId>{int(datetime.datetime.now().timestamp())}</uniqueId>
-    <generationTime>{(datetime.datetime.now() - datetime.timedelta(minutes=10)).isoformat()}</generationTime>
-    <expirationTime>{(datetime.datetime.now() + datetime.timedelta(minutes=10)).isoformat()}</expirationTime>
-  </header>
-  <service>wsfe</service>
-</loginTicketRequest>
-"""
+    # =====================================================
+    # 1. OBTENER VARIABLES DE ENTORNO
+    # =====================================================
 
-    bio_tra = BIO.MemoryBuffer(tra.encode("utf-8"))
+    afip_private_key = os.environ.get("AFIP_PRIVATE_KEY")
+    afip_cert = os.environ.get("AFIP_CERT_CRT")
 
-    # Cargar certificado y key desde las variables de entorno
-    bio_cert = BIO.MemoryBuffer(CERT_CRT.encode())
-    x509 = X509.load_cert_bio(bio_cert)
+    cuit = os.environ.get("AFIP_CUIT")
+    alias = os.environ.get("AFIP_ALIAS", "default")
 
-    bio_key = BIO.MemoryBuffer(CERT_KEY.encode())
+    if not afip_private_key:
+        raise Exception("AFIP_PRIVATE_KEY no está definida")
 
-    # Preparar SMIME
-    smime = SMIME.SMIME()
-    smime.load_key_bio(bio_key, bio_cert)
+    if not afip_cert:
+        raise Exception("AFIP_CERT_CRT no está definida")
 
-    # Firmar CMS correctamente (PKCS7, DER)
-    pkcs7 = smime.sign(bio_tra, flags=SMIME.PKCS7_BINARY)
-    out = BIO.MemoryBuffer()
-    pkcs7.write_der(out)
+    if not cuit:
+        raise Exception("AFIP_CUIT no está definida")
 
-    cms = base64.b64encode(out.read()).decode("utf-8")
+    # =====================================================
+    # 2. WSAA – AUTENTICACIÓN
+    # =====================================================
 
-    # Llamada a WSAA
-    client = Client(WSAA_WSDL)
-    ta = client.service.loginCms(cms)
+    wsaa = WSAA()
 
-    return ta["credentials"]["token"], ta["credentials"]["sign"]
+    # Fuerzo **SIEMPRE** MODO PRODUCCIÓN
+    wsaa.HOMO = False
+    wsaa.Production = True
 
+    # Cargo clave y certificado directamente desde variables
+    wsaa.key = afip_private_key
+    wsaa.crt = afip_cert
 
-def test_afip_connection():
-    try:
-        token, sign = generar_TA()
+    # Archivo temporal para el ticket
+    ta_xml = f"TA-{alias}.xml"
 
-        client = Client(WSFE_WSDL)
+    # Solicito TA al WSAA oficial
+    ta = wsaa.Autenticar(
+        servicio="wsfe",
+        ta_xml=ta_xml,
+    )
 
-        result = client.service.FECompUltimoAutorizado(
-            Auth={"Token": token, "Sign": sign, "Cuit": CUIT},
-            PtoVta=3,    # punto de venta
-            CbteTipo=6   # Factura B (cambiar si querés)
-        )
+    if wsaa.Excepcion:
+        raise Exception(f"Error WSAA: {wsaa.Excepcion}")
 
-        return {
-            "status": "ok",
-            "ultimo": result.CbteNro,
-            "mensaje": "Conexión correcta a AFIP producción."
-        }
+    token = wsaa.Token
+    sign = wsaa.Sign
 
-    except Exception as e:
-        return {"status": "error", "detalle": str(e)}
+    # =====================================================
+    # 3. WSFEv1 – FACTURACIÓN
+    # =====================================================
+
+    wsfe = WSFEv1()
+    wsfe.Cuit = int(cuit)
+
+    # Fuerzo producción
+    wsfe.HOMO = False
+    wsfe.Production =
