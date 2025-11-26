@@ -2,4 +2,4 @@ fastapi
 uvicorn
 httpx
 python-multipart
-pyafipws==3.31
+pyafipws==2.7.1874
