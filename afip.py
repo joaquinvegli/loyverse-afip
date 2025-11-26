@@ -1,26 +1,26 @@
 import os
 import subprocess
 import tempfile
-import base64
 from datetime import datetime, timedelta, timezone
 
 from pyafipws.wsaa import WSAA
 from pyafipws.wsfev1 import WSFEv1
 
 
-def generar_cms_b64(crt_path: str, key_path: str) -> str:
+def generar_cms_pem(crt_path: str, key_path: str) -> str:
     """
-    Genera el LoginTicketRequest firmado en formato CMS (DER),
-    lo convierte a base64 y lo devuelve como string listo para
-    ser enviado a WSAA.LoginCMS().
+    Genera un CMS en formato PEM (PKCS7 Base64) que es el formato
+    que PyAfipWS necesita recibir en LoginCMS().
     """
-    TZ = timezone(timedelta(hours=-3))  # Argentina UTC-3
+
+    # Argentina UTC-3
+    TZ = timezone(timedelta(hours=-3))
     now = datetime.now(TZ)
 
     gen = (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S%z")
     exp = (now + timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S%z")
 
-    # pasar de -0300 a -03:00
+    # corregir zona horaria: -0300 → -03:00
     generation_time = gen[:-2] + ":" + gen[-2:]
     expiration_time = exp[:-2] + ":" + exp[-2:]
 
@@ -37,39 +37,39 @@ def generar_cms_b64(crt_path: str, key_path: str) -> str:
 
     with tempfile.TemporaryDirectory() as tmp:
         req_xml = os.path.join(tmp, "req.xml")
-        cms_der = os.path.join(tmp, "req.cms")
+        cms_pem = os.path.join(tmp, "req.pem")
 
         with open(req_xml, "w", encoding="utf-8") as f:
             f.write(xml_data)
 
+        # CMS en formato PEM (requerido por PyAfipWS)
         cmd = [
             "openssl", "smime", "-sign",
-            "-binary",
             "-signer", crt_path,
             "-inkey", key_path,
             "-in", req_xml,
-            "-out", cms_der,
-            "-outform", "DER",
-            "-nodetach",
+            "-out", cms_pem,
+            "-outform", "PEM",
+            "-nodetach"
         ]
 
         res = subprocess.run(cmd, capture_output=True)
         if res.returncode != 0:
             raise Exception("OpenSSL error: " + res.stderr.decode(errors="ignore"))
 
-        with open(cms_der, "rb") as f:
-            cms_bytes = f.read()
+        with open(cms_pem, "r", encoding="utf-8", errors="ignore") as f:
+            pem_text = f.read()
 
-    cms_b64 = base64.b64encode(cms_bytes).decode()
-    return cms_b64
+    return pem_text
 
 
 def test_afip_connection():
     """
-    1) Genera CMS base64 (igual que /debug/login_raw, pero sin SOAP).
-    2) Llama a WSAA.LoginCMS() usando pyafipws.
-    3) Usa el token/sign para consultar WSFE (último comprobante autorizado).
+    1) Genera CMS en formato PEM (PARA PyAfipWS).
+    2) Llama a WSAA.LoginCMS().
+    3) Usa Token & Sign en WSFE.
     """
+
     key_path = "/etc/secrets/afip_new.key"
     crt_path = "/etc/secrets/afip_new.crt"
 
@@ -79,21 +79,21 @@ def test_afip_connection():
         return {"error": f"No existe {crt_path}"}
 
     # ==========================
-    # 1) Generar CMS base64
+    # 1) CMS formato PEM
     # ==========================
     try:
-        cms_b64 = generar_cms_b64(crt_path, key_path)
+        cms_pem = generar_cms_pem(crt_path, key_path)
     except Exception as e:
-        return {"error": f"Error generando CMS: {e}"}
+        return {"error": f"Error generando CMS PEM: {e}"}
 
     # ==========================
     # 2) WSAA.LoginCMS
     # ==========================
     wsaa = WSAA()
-    wsaa.HOMO = False  # Producción
+    wsaa.HOMO = False  # PRODUCCIÓN
 
     try:
-        wsaa.LoginCMS(cms_b64)
+        wsaa.LoginCMS(cms_pem)
     except Exception as e:
         return {"error": f"Error en LoginCMS(): {e}"}
 
@@ -105,18 +105,18 @@ def test_afip_connection():
     # ==========================
     cuit = os.environ.get("AFIP_CUIT")
     if not cuit:
-        return {"error": "Falta AFIP_CUIT en variables de entorno"}
+        return {"error": "Falta AFIP_CUIT"}
 
     try:
         cuit_int = int(cuit)
-    except ValueError:
+    except:
         return {"error": f"AFIP_CUIT inválido: {cuit}"}
 
     pto_vta = int(os.environ.get("AFIP_PTO_VTA", "1"))
-    tipo_cbte = 11  # Factura C (cambiable)
+    tipo_cbte = 11  # Factura C
 
     wsfe = WSFEv1()
-    wsfe.HOMO = False  # Producción
+    wsfe.HOMO = False
     wsfe.Token = wsaa.Token
     wsfe.Sign = wsaa.Sign
     wsfe.Cuit = cuit_int
@@ -134,5 +134,5 @@ def test_afip_connection():
         "ultimo_cbte": wsfe.CbteNro,
         "token_start": wsaa.Token[:40] + "...",
         "sign_start": wsaa.Sign[:40] + "...",
-        "detail": "Autenticación WSAA y consulta WSFE OK",
+        "detail": "Autenticación WSAA + WSFE OK"
     }
