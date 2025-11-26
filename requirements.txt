@@ -1,5 +1,6 @@
 fastapi
-uvicorn[standard]
-httpx
+uvicorn
+requests
 python-dotenv
-git+https://github.com/reingart/pyafipws.git
+zeep
+M2Crypto
