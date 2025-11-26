@@ -4,25 +4,35 @@ from afip import test_afip_connection
 
 app = FastAPI()
 
+
 @app.get("/")
 def root():
     return {"status": "ok", "message": "API funcionando"}
 
+
 @app.get("/test/afip")
 def test_afip():
+    """
+    Prueba completa usando PyAfipWS (afip.py).
+    """
     try:
         result = test_afip_connection()
         return {"status": "ok", "data": result}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+
 @app.get("/debug/afip-files")
 def debug_files():
+    """
+    Muestra los primeros bytes de los archivos de certificados/keys
+    que estás usando realmente (afip_new.*).
+    """
     try:
-        with open("/etc/secrets/afip.key", "rb") as f:
+        with open("/etc/secrets/afip_new.key", "rb") as f:
             key_bytes = f.read()
 
-        with open("/etc/secrets/afip.crt", "rb") as f:
+        with open("/etc/secrets/afip_new.crt", "rb") as f:
             crt_bytes = f.read()
 
         return {
@@ -35,11 +45,17 @@ def debug_files():
     except Exception as e:
         return {"error": str(e)}
 
+
+# Si tenés un router extra en debug.py lo seguimos incluyendo
 from debug import router as debug_router
 app.include_router(debug_router)
 
+
 @app.get("/debug/wsdl2")
 def debug_wsdl2():
+    """
+    Verifica que se pueda descargar el WSDL de AFIP y que 'requests' funcione.
+    """
     import traceback
     import requests
 
@@ -58,20 +74,33 @@ def debug_wsdl2():
             "trace": traceback.format_exc()
         }
 
+
 @app.get("/debug/imports")
 def debug_imports():
+    """
+    Verifica que el módulo 'requests' esté instalado y accesible.
+    """
     try:
         import requests
         return {"status": "ok", "requests_version": requests.__version__}
     except Exception as e:
         return {"error": str(e)}
 
+
 @app.get("/debug/login_raw")
 def debug_login_raw():
+    """
+    Prueba de conexión directa al WSAA de AFIP sin PyAfipWS:
+    - Genera el CMS con openssl (DER binario)
+    - Lo pasa a base64
+    - Lo manda dentro de un sobre SOAP (como AFIP exige)
+    Esto sirve para ver si el certificado, la clave y la conexión están OK.
+    """
     import os
     import subprocess
     import tempfile
     import requests
+    import base64
 
     key_path = "/etc/secrets/afip_new.key"
     crt_path = "/etc/secrets/afip_new.crt"
@@ -82,7 +111,7 @@ def debug_login_raw():
     if not os.path.exists(crt_path):
         return {"error": f"NO existe {crt_path}"}
 
-    # 1) Crear XML del requerimiento
+    # 1) XML del loginTicketRequest (puede ajustarse luego para fechas dinámicas)
     xml_data = """<?xml version="1.0" encoding="UTF-8"?>
 <loginTicketRequest version="1.0">
   <header>
@@ -96,46 +125,7 @@ def debug_login_raw():
 
     with tempfile.TemporaryDirectory() as tmp:
         req_xml = os.path.join(tmp, "req.xml")
-        cms_out = os.path.join(tmp, "req.cms")
+        cms_der = os.path.join(tmp, "req.cms")
 
-        with open(req_xml, "w", encoding="utf-8") as f:
-            f.write(xml_data)
-
-        # 2) Ejecutar OpenSSL para firmar CMS
-        cmd = [
-            "openssl", "smime", "-sign",
-            "-binary",
-            "-signer", crt_path,
-            "-inkey", key_path,
-            "-in", req_xml,
-            "-out", cms_out,
-            "-outform", "DER",
-            "-nodetach"
-        ]
-
-        res = subprocess.run(cmd, capture_output=True)
-        if res.returncode != 0:
-            return {
-                "error": "OpenSSL error",
-                "stderr": res.stderr.decode(errors="ignore")
-            }
-
-        with open(cms_out, "rb") as f:
-            cms_bytes = f.read()
-
-        # 3) Mandarlo directo a AFIP
-        url = "https://wsaa.afip.gov.ar/ws/services/LoginCms"
-        headers = {"Content-Type": "application/octet-stream"}
-
-        try:
-            resp = requests.post(url, headers=headers, data=cms_bytes)
-        except Exception as e:
-            return {"error": f"request exception: {e}"}
-
-        # 🔥 ESTA ES LA PARTE MODIFICADA
-        # devolvemos TODO el XML completo SIN recortar
-        return {
-            "http_status": resp.status_code,
-            "text": resp.text,   # <-- ahora completo
-            "raw_bytes_start": list(resp.content[:20])
-        }
+        # Guardamos el XML
+        with open(req_xml, "_
