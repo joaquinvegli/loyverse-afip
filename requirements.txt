@@ -1,5 +1,5 @@
 fastapi
 uvicorn[standard]
 httpx
-pyafipws
 python-dotenv
+git+https://github.com/reingart/pyafipws.git
