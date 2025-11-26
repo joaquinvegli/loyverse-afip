@@ -21,6 +21,9 @@ def test_afip():
 
 @app.get("/debug/afip-files")
 def debug_files():
+    """
+    Muestra los primeros bytes de los certificados y keys usados.
+    """
     try:
         with open("/etc/secrets/afip_new.key", "rb") as f:
             key_bytes = f.read()
@@ -38,6 +41,7 @@ def debug_files():
         return {"error": str(e)}
 
 
+# router adicional si existe
 from debug import router as debug_router
 app.include_router(debug_router)
 
@@ -75,14 +79,18 @@ def debug_imports():
 @app.get("/debug/login_raw")
 def debug_login_raw():
     """
-    Genera un CMS DER, lo pasa a base64, y lo envía dentro de un sobre SOAP.
-    Esto permite probar la conexión real con el WSAA de AFIP sin PyAfipWS.
+    Prueba WSAA directa:
+    - Genera CMS DER válido
+    - Lo convierte a base64
+    - Lo envía dentro de un sobre SOAP correcto
+    - Usa fechas dinámicas válidas para AFIP
     """
     import os
     import subprocess
     import tempfile
     import requests
     import base64
+    from datetime import datetime, timedelta
 
     key_path = "/etc/secrets/afip_new.key"
     crt_path = "/etc/secrets/afip_new.crt"
@@ -93,26 +101,35 @@ def debug_login_raw():
     if not os.path.exists(crt_path):
         return {"error": f"NO existe {crt_path}"}
 
-    xml_data = """<?xml version="1.0" encoding="UTF-8"?>
+    # ============================
+    # 1) Fechas dinámicas válidas
+    # ============================
+    generation_time = (datetime.utcnow() - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S")
+    expiration_time = (datetime.utcnow() + timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S")
+
+    xml_data = f"""<?xml version="1.0" encoding="UTF-8"?>
 <loginTicketRequest version="1.0">
   <header>
     <uniqueId>1</uniqueId>
-    <generationTime>2025-01-01T00:00:00-03:00</generationTime>
-    <expirationTime>2030-01-01T00:00:00-03:00</expirationTime>
+    <generationTime>{generation_time}</generationTime>
+    <expirationTime>{expiration_time}</expirationTime>
   </header>
   <service>wsfe</service>
 </loginTicketRequest>
 """
 
+    # ============================
+    # 2) Firmar CMS en formato DER
+    # ============================
     with tempfile.TemporaryDirectory() as tmp:
         req_xml = os.path.join(tmp, "req.xml")
         cms_der = os.path.join(tmp, "req.cms")
 
-        # escribir XML
+        # Escribir XML temporal
         with open(req_xml, "w", encoding="utf-8") as f:
             f.write(xml_data)
 
-        # generar CMS DER
+        # Crear CMS
         cmd = [
             "openssl", "smime", "-sign",
             "-binary",
@@ -135,10 +152,14 @@ def debug_login_raw():
         with open(cms_der, "rb") as f:
             cms_bytes = f.read()
 
-    # base64 del CMS DER
+    # ============================
+    # 3) Convertir CMS a base64
+    # ============================
     cms_b64 = base64.b64encode(cms_bytes).decode()
 
-    # sobre SOAP correcto
+    # ============================
+    # 4) Armar sobre SOAP correcto
+    # ============================
     soap_body = f"""<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
   <soapenv:Body>
@@ -162,5 +183,5 @@ def debug_login_raw():
 
     return {
         "http_status": resp.status_code,
-        "text": resp.text[:4000],
+        "text": resp.text[:4000],  # limitar salida
     }
