@@ -1,72 +1,109 @@
 import os
+import subprocess
+import tempfile
 from pyafipws.wsaa import WSAA
 from pyafipws.wsfev1 import WSFEv1
 
 
-# Rutas donde Render monta los Secret Files
-KEY_PATH = "/etc/secrets/afip.key"
-CRT_PATH = "/etc/secrets/afip.crt"
+def generar_cms(private_key, certificate, service="wsfe"):
+    """
+    Genera un CMS firmado usando openssl (AFIP lo requiere así).
+    """
+
+    with tempfile.TemporaryDirectory() as tmp:
+        key_path = os.path.join(tmp, "afip.key")
+        crt_path = os.path.join(tmp, "afip.crt")
+        req_path = os.path.join(tmp, "login.xml")
+        cms_path = os.path.join(tmp, "loginCMS.xml")
+
+        # Guardar KEY y CERT
+        with open(key_path, "w") as f:
+            f.write(private_key)
+
+        with open(crt_path, "w") as f:
+            f.write(certificate)
+
+        # Archivo de requerimiento
+        login_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<loginTicketRequest version="1.0">
+    <header>
+        <uniqueId>1</uniqueId>
+        <generationTime>2024-01-01T00:00:00-03:00</generationTime>
+        <expirationTime>2030-01-01T00:00:00-03:00</expirationTime>
+    </header>
+    <service>{service}</service>
+</loginTicketRequest>
+"""
+
+        with open(req_path, "w") as f:
+            f.write(login_xml)
+
+        # Firmar usando openssl
+        cmd = [
+            "openssl", "smime",
+            "-sign",
+            "-signer", crt_path,
+            "-inkey", key_path,
+            "-nodetach",
+            "-outform", "DER",
+            "-in", req_path,
+            "-out", cms_path,
+        ]
+
+        res = subprocess.run(cmd, capture_output=True)
+
+        if res.returncode != 0:
+            raise Exception(f"Error generando CMS: {res.stderr.decode()}")
+
+        with open(cms_path, "rb") as f:
+            return f.read()
 
 
 def test_afip_connection():
     """
-    Test mínimo de conexión WSAA + WSFE en producción
+    Solo prueba la conexión WSAA + WSFE.
     """
 
-    if not os.path.exists(KEY_PATH):
-        raise Exception(f"No existe la clave privada: {KEY_PATH}")
-
-    if not os.path.exists(CRT_PATH):
-        raise Exception(f"No existe el certificado: {CRT_PATH}")
-
+    key = os.environ.get("AFIP_CERT_KEY")
+    cert = os.environ.get("AFIP_CERT_CRT")
     cuit = os.environ.get("AFIP_CUIT")
-    if not cuit:
-        raise Exception("Falta la variable AFIP_CUIT")
+    pto_vta = int(os.environ.get("AFIP_PTO_VTA", "1"))
 
-    # ============================
-    # WSAA - Autenticación
-    # ============================
+    if not key or not cert:
+        return {"error": "Variables AFIP_CERT_KEY o AFIP_CERT_CRT no están definidas"}
+
+    # =====================================
+    # 1. Generar CMS firmado (AFIP requiere esto)
+    # =====================================
+    cms = generar_cms(key, cert)
+
+    # =====================================
+    # 2. Enviar CMS al WSAA
+    # =====================================
     wsaa = WSAA()
-    wsaa.HOMO = False           # siempre producción
-    wsaa.Production = True
+    wsaa.HOMO = False  # PRODUCCIÓN
 
-    cert = open(CRT_PATH).read()
-    key = open(KEY_PATH).read()
-
-    wsaa.LoginCMS(
-        Certificado=cert,
-        PrivateKey=key,
-        Service="wsfe"
-    )
+    ta_string = wsaa.LoginCMS(cms)
 
     if wsaa.Excepcion:
-        raise Exception(f"WSAA Error: {wsaa.Excepcion}")
+        raise Exception(wsaa.Excepcion)
 
-    token = wsaa.Token
-    sign = wsaa.Sign
-
-    # ============================
-    # WSFE - Test básico
-    # ============================
+    # =====================================
+    # 3. Conectar WSFE
+    # =====================================
     wsfe = WSFEv1()
-    wsfe.HOMO = False
-    wsfe.Production = True
-
     wsfe.Cuit = int(cuit)
-    wsfe.Token = token
-    wsfe.Sign = sign
+    wsfe.Sign = wsaa.Sign
+    wsfe.Token = wsaa.Token
+    wsfe.HOMO = False  # PRODUCCIÓN
 
-    # solo obtener último comprobante autorizado para verificar permisos
-    punto_vta = int(os.environ.get("AFIP_PTO_VTA", "1"))
-    tipo_cbte = 11  # factura C
-
-    wsfe.CompUltimoAutorizado(tipo_cbte, punto_vta)
-
-    if wsfe.ErrMsg:
-        raise Exception(f"WSFE Error: {wsfe.ErrMsg}")
+    # Pedimos último comprobante
+    tipo_cbte = 11  # Factura C
+    wsfe.CompUltimoAutorizado(tipo_cbte, pto_vta)
 
     return {
-        "estado": "OK",
-        "ultimo_cbte": wsfe.CbteNro,
-        "token_inicio": wsaa.Token[:40] + "..."
+        "status": "ok",
+        "ultimo": wsfe.CbteNro,
+        "token": wsaa.Token[:20] + "...",
+        "sign": wsaa.Sign[:20] + "..."
     }
