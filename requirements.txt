@@ -2,6 +2,5 @@ fastapi
 uvicorn
 httpx
 python-multipart
-
-# PyAfipWs Python3 compatible — master branch
+requests
 git+https://github.com/reingart/pyafipws.git#egg=pyafipws
