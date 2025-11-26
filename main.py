@@ -38,12 +38,23 @@ def debug_files():
 from debug import router as debug_router
 app.include_router(debug_router)
 
-@app.get("/debug/wsdl")
-def debug_wsdl():
+@app.get("/debug/wsdl2")
+def debug_wsdl2():
+    import traceback
     import requests
+
+    url = "https://wsaa.afip.gov.ar/ws/services/LoginCms?wsdl"
     try:
-        r = requests.get("https://wsaa.afip.gov.ar/ws/services/LoginCms?wsdl", timeout=10)
-        return {"status": r.status_code, "len": len(r.text)}
+        r = requests.get(url, timeout=10)
+        return {
+            "status": r.status_code,
+            "headers": dict(r.headers),
+            "first_200": r.text[:200]
+        }
     except Exception as e:
-        return {"error": str(e)}
+        return {
+            "error": str(e),
+            "type": str(type(e)),
+            "trace": traceback.format_exc()
+        }
 
