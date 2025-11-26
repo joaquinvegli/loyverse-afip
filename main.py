@@ -21,6 +21,9 @@ def test_afip():
 
 @app.get("/debug/afip-files")
 def debug_files():
+    """
+    Muestra los primeros bytes de los certificados y keys usados.
+    """
     try:
         with open("/etc/secrets/afip_new.key", "rb") as f:
             key_bytes = f.read()
@@ -46,7 +49,6 @@ app.include_router(debug_router)
 def debug_wsdl2():
     import traceback
     import requests
-
     url = "https://wsaa.afip.gov.ar/ws/services/LoginCms?wsdl"
     try:
         r = requests.get(url, timeout=10)
@@ -74,25 +76,40 @@ def debug_imports():
 
 @app.get("/debug/login_raw")
 def debug_login_raw():
+    """
+    Prueba directa del WSAA:
+    - firma CMS DER válido
+    - lo convierte a base64
+    - arma sobre SOAP
+    - usa timestamps con zona horaria -03:00 (requerido por AFIP)
+    """
     import os
     import subprocess
     import tempfile
     import requests
     import base64
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     key_path = "/etc/secrets/afip_new.key"
     crt_path = "/etc/secrets/afip_new.crt"
 
     if not os.path.exists(key_path):
         return {"error": f"NO existe {key_path}"}
-
     if not os.path.exists(crt_path):
         return {"error": f"NO existe {crt_path}"}
 
-    # Fechas dinámicas para AFIP
-    generation_time = (datetime.utcnow() - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S")
-    expiration_time = (datetime.utcnow() + timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S")
+    # ================================
+    # 1) Timestamps dinámicos con UTC-3
+    # ================================
+    TZ = timezone(timedelta(hours=-3))  # Argentina UTC-3
+    now = datetime.now(TZ)
+
+    gen = (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S%z")
+    exp = (now + timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    # convertir de -0300 a -03:00
+    generation_time = gen[:-2] + ":" + gen[-2:]
+    expiration_time = exp[:-2] + ":" + exp[-2:]
 
     xml_data = f"""<?xml version="1.0" encoding="UTF-8"?>
 <loginTicketRequest version="1.0">
@@ -105,6 +122,9 @@ def debug_login_raw():
 </loginTicketRequest>
 """
 
+    # ================================
+    # 2) Crear CMS DER
+    # ================================
     with tempfile.TemporaryDirectory() as tmp:
         req_xml = os.path.join(tmp, "req.xml")
         cms_der = os.path.join(tmp, "req.cms")
@@ -134,8 +154,14 @@ def debug_login_raw():
         with open(cms_der, "rb") as f:
             cms_bytes = f.read()
 
+    # ================================
+    # 3) Convertir CMS a base64
+    # ================================
     cms_b64 = base64.b64encode(cms_bytes).decode()
 
+    # ================================
+    # 4) Sobre SOAP correcto
+    # ================================
     soap_body = f"""<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
   <soapenv:Body>
@@ -159,13 +185,13 @@ def debug_login_raw():
 
     return {
         "http_status": resp.status_code,
-        "text": resp.text[:4000],
+        "text": resp.text[:4000]
     }
 
 
-# -------------------------------
-# NUEVO ENDPOINT CORRECTO AQUÍ
-# -------------------------------
+# ======================================================
+# NUEVO ENDPOINT PARA VER HORA DEL SERVIDOR
+# ======================================================
 @app.get("/debug/server_time")
 def debug_server_time():
     from datetime import datetime, timedelta
@@ -180,4 +206,3 @@ def debug_server_time():
         "afip_utc_minus3": now_utc_afip.strftime("%Y-%m-%d %H:%M:%S"),
         "diff_seconds": now_local.timestamp() - now_utc.timestamp(),
     }
-
