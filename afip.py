@@ -13,8 +13,8 @@ def test_afip_connection():
     # =====================================
     # 1. LEER ARCHIVOS REALES
     # =====================================
-    key_path = "/etc/secrets/afip.key"
-    crt_path = "/etc/secrets/afip.crt"
+key_path = "/etc/secrets/afip_new.key"
+crt_path = "/etc/secrets/afip_new.crt"
 
     if not os.path.exists(key_path):
         return {"error": "Archivo secreto afip.key NO existe en Render"}
