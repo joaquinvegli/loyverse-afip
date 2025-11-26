@@ -136,7 +136,7 @@ def debug_login_raw():
 
     cms_b64 = base64.b64encode(cms_bytes).decode()
 
-   .soap_body = f"""<?xml version="1.0" encoding="UTF-8"?>
+    soap_body = f"""<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
   <soapenv:Body>
     <loginCms>
@@ -180,3 +180,4 @@ def debug_server_time():
         "afip_utc_minus3": now_utc_afip.strftime("%Y-%m-%d %H:%M:%S"),
         "diff_seconds": now_local.timestamp() - now_utc.timestamp(),
     }
+
