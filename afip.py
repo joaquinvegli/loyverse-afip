@@ -8,18 +8,23 @@ from datetime import datetime, timedelta, timezone
 from pyafipws.wsfev1 import WSFEv1
 
 
+# ======================================================
+# 1) GENERAR CMS DER → BASE64  (como /debug/login_raw)
+# ======================================================
 def generar_cms_der_b64(crt_path: str, key_path: str) -> str:
     """
-    Genera un CMS DER (binario) y lo devuelve en base64,
-    igual que el método probado en /debug/login_raw.
+    Genera un LoginTicketRequest firmado en formato CMS DER (binario)
+    y lo devuelve como base64, que es lo que AFIP espera.
     """
+
+    # Zona horaria correcta para AFIP (UTC-3)
     TZ = timezone(timedelta(hours=-3))
     now = datetime.now(TZ)
 
     gen = (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S%z")
     exp = (now + timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S%z")
 
-    # convertir -0300 → -03:00
+    # AFIP quiere -03:00 en lugar de -0300
     generation_time = gen[:-2] + ":" + gen[-2:]
     expiration_time = exp[:-2] + ":" + exp[-2:]
 
@@ -49,7 +54,7 @@ def generar_cms_der_b64(crt_path: str, key_path: str) -> str:
             "-in", req_xml,
             "-out", cms_der,
             "-outform", "DER",
-            "-nodetach"
+            "-nodetach",
         ]
 
         res = subprocess.run(cmd, capture_output=True)
@@ -62,12 +67,16 @@ def generar_cms_der_b64(crt_path: str, key_path: str) -> str:
     return base64.b64encode(cms_bytes).decode()
 
 
+# ======================================================
+# 2) LOGINCMS DIRECTO (sin PyAfipWS, con parser correcto)
+# ======================================================
 def login_cms_directo(cms_b64: str):
     """
-    LoginCMS hecho a mano usando requests.
-    Esto reemplaza al WSAA.LoginCMS de PyAfipWS,
-    que falla en varios entornos (incluido Render).
+    LoginCMS por requests directamente, como en /debug/login_raw.
+    Extrae Token & Sign desde el XML interno escapado que devuelve AFIP.
     """
+    import html
+    from xml.etree import ElementTree as ET
 
     soap_body = f"""<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
@@ -90,33 +99,50 @@ def login_cms_directo(cms_b64: str):
     if r.status_code != 200:
         raise Exception(f"WSAA devolvió {r.status_code}: {r.text}")
 
-    # Extraer Token y Sign
-    from xml.etree import ElementTree as ET
-
+    # Parse SOAP
     tree = ET.fromstring(r.text)
-    ns = {"soapenv": "http://schemas.xmlsoap.org/soap/envelope/"}
 
-    # buscar dentro del XML
-    token = None
-    sign = None
-
+    # Buscar nodo loginCmsReturn (donde AFIP mete el XML escapado)
+    nodo_return = None
     for elem in tree.iter():
+        if elem.tag.endswith("loginCmsReturn"):
+            nodo_return = elem
+            break
+
+    if nodo_return is None:
+        raise Exception("No se encontró loginCmsReturn en la respuesta")
+
+    raw_xml = nodo_return.text
+    if not raw_xml:
+        raise Exception("loginCmsReturn está vacío")
+
+    # AFIP devuelve XML escapado (&lt;...&gt;)
+    raw_xml = html.unescape(raw_xml)
+
+    inner = ET.fromstring(raw_xml)
+
+    token, sign = None, None
+
+    for elem in inner.iter():
         if elem.tag.endswith("token"):
             token = elem.text
         if elem.tag.endswith("sign"):
             sign = elem.text
 
     if not token or not sign:
-        raise Exception("No se pudo extraer Token/Sign del LoginCMS")
+        raise Exception("No se pudo extraer Token/Sign del XML interno")
 
     return token, sign
 
 
+# ======================================================
+# 3) WSFE CON PYAFIPWS (Token & Sign válidos)
+# ======================================================
 def test_afip_connection():
     """
-    1) Genera CMS DER+Base64
-    2) Se loguea contra AFIP WSAA directamente (funciona comprobado)
-    3) Con el Token/Sign usa PyAfipWS para consultar WSFE
+    1) Genera CMS DER+Base64 con TZ correcto
+    2) LoginCMS directo (comprobado que funciona)
+    3) WSFE último comprobante autorizado (PyAfipWS)
     """
 
     key_path = "/etc/secrets/afip_new.key"
@@ -127,13 +153,13 @@ def test_afip_connection():
     if not os.path.exists(crt_path):
         return {"error": f"No existe {crt_path}"}
 
-    # 1) CMS base64
+    # 1) CMS DER+BASE64 (igual al que funciona en debug)
     try:
         cms_b64 = generar_cms_der_b64(crt_path, key_path)
     except Exception as e:
         return {"error": f"Error generando CMS: {e}"}
 
-    # 2) LoginCMS directo (FUNCIONA)
+    # 2) LoginCMS directo a AFIP (esto FUNCIONA)
     try:
         token, sign = login_cms_directo(cms_b64)
     except Exception as e:
@@ -142,7 +168,7 @@ def test_afip_connection():
     # 3) WSFE usando PyAfipWS
     cuit = os.environ.get("AFIP_CUIT")
     if not cuit:
-        return {"error": "Falta AFIP_CUIT"}
+        return {"error": "Falta AFIP_CUIT en variables de entorno"}
 
     try:
         cuit_int = int(cuit)
