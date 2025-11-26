@@ -15,3 +15,22 @@ def test_afip():
         return {"status": "ok", "data": result}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get("/debug/afip-files")
+def debug_files():
+    try:
+        with open("/etc/secrets/afip.key", "rb") as f:
+            key_bytes = f.read()
+
+        with open("/etc/secrets/afip.crt", "rb") as f:
+            crt_bytes = f.read()
+
+        return {
+            "key_first_bytes": list(key_bytes[:20]),
+            "crt_first_bytes": list(crt_bytes[:20]),
+            "key_text_start": key_bytes[:200].decode("latin1", errors="replace"),
+            "crt_text_start": crt_bytes[:200].decode("latin1", errors="replace"),
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
