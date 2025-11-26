@@ -63,6 +63,67 @@ def facturar_prueba():
     wsfe = WSFEv1()
     wsfe.Cuit = int(cuit)
 
-    # Fuerzo producción
+   # Fuerzo producción
     wsfe.HOMO = False
-    wsfe.Production =
+    wsfe.Production = True
+
+    # Asigno token y firma obtenidos
+    wsfe.Token = token
+    wsfe.Sign = sign
+
+    # Último número autorizado
+    punto_vta = 1
+    tipo_cbte = 11  # FACTURA C
+
+    cae_request = wsfe.CompUltimoAutorizado(tipo_cbte, punto_vta)
+    ultimo = wsfe.CbteNro
+
+    # =====================================================================
+    # 4. CREAR FACTURA DE PRUEBA (Real, pero con monto 1 para testeo)
+    # =====================================================================
+
+    wsfe.Inicio = ultimo + 1
+    wsfe.Nro = ultimo + 1
+    wsfe.FchCbte = wsfe.FechadeHoy()
+
+    wsfe.MonedaId = "PES"
+    wsfe.MonedaCotiz = 1
+
+    wsfe.ImpTotal = 1
+    wsfe.ImpNeto = 1
+    wsfe.ImpOpEx = 0
+    wsfe.ImpIVA = 0
+    wsfe.ImpTrib = 0
+
+    # Cliente consumidor final
+    wsfe.TipoDoc = 99
+    wsfe.NroDoc = 0
+
+    wsfe.Concepto = 1  # productos
+    wsfe.CantReg = 1
+
+    wsfe.Detalle = [{
+        "Qty": 1,
+        "Item": "Prueba API",
+        "ImpTotal": 1,
+    }]
+
+    # =====================================================================
+    # 5. AUTORIZAR
+    # =====================================================================
+
+    resultado = wsfe.CAESolicitar()
+
+    if wsfe.Excepcion:
+        raise Exception(f"Error WSFE: {wsfe.Excepcion}")
+
+    if wsfe.ErrMsg:
+        raise Exception(f"AFIP devolvió error: {wsfe.ErrMsg}")
+
+    return {
+        "resultado": wsfe.Resultado,
+        "cae": wsfe.CAE,
+        "cae_vto": wsfe.Vencimiento,
+        "cbte": wsfe.Nro,
+        "punto_vta": punto_vta,
+    }
