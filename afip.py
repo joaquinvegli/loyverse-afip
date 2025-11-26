@@ -3,6 +3,26 @@ import subprocess
 import tempfile
 from pyafipws.wsaa import WSAA
 from pyafipws.wsfev1 import WSFEv1
+import base64
+
+    # =====================================
+    # 2. GENERAR CMS EN FORMATO BINARIO
+    # =====================================
+    cms_der = generar_cms_bytes(private_key, certificate)
+
+    # Convertir a BASE64 porque LoginCMS **no acepta DER**
+    cms_b64 = base64.b64encode(cms_der).decode()
+
+    # =====================================
+    # 3. WSAA
+    # =====================================
+    wsaa = WSAA()
+    wsaa.HOMO = False  # producción
+
+    ta = wsaa.LoginCMS(cms_b64)
+
+    if wsaa.Excepcion:
+        raise Exception(wsaa.Excepcion)
 
 
 def test_afip_connection():
