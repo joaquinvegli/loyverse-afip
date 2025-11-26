@@ -1,26 +1,25 @@
 import os
 import subprocess
 import tempfile
+import base64
+import requests
 from datetime import datetime, timedelta, timezone
 
-from pyafipws.wsaa import WSAA
 from pyafipws.wsfev1 import WSFEv1
 
 
-def generar_cms_pem(crt_path: str, key_path: str) -> str:
+def generar_cms_der_b64(crt_path: str, key_path: str) -> str:
     """
-    Genera un CMS en formato PEM (PKCS7 Base64) que es el formato
-    que PyAfipWS necesita recibir en LoginCMS().
+    Genera un CMS DER (binario) y lo devuelve en base64,
+    igual que el método probado en /debug/login_raw.
     """
-
-    # Argentina UTC-3
     TZ = timezone(timedelta(hours=-3))
     now = datetime.now(TZ)
 
     gen = (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S%z")
     exp = (now + timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S%z")
 
-    # corregir zona horaria: -0300 → -03:00
+    # convertir -0300 → -03:00
     generation_time = gen[:-2] + ":" + gen[-2:]
     expiration_time = exp[:-2] + ":" + exp[-2:]
 
@@ -37,19 +36,19 @@ def generar_cms_pem(crt_path: str, key_path: str) -> str:
 
     with tempfile.TemporaryDirectory() as tmp:
         req_xml = os.path.join(tmp, "req.xml")
-        cms_pem = os.path.join(tmp, "req.pem")
+        cms_der = os.path.join(tmp, "req.cms")
 
         with open(req_xml, "w", encoding="utf-8") as f:
             f.write(xml_data)
 
-        # CMS en formato PEM (requerido por PyAfipWS)
         cmd = [
             "openssl", "smime", "-sign",
+            "-binary",
             "-signer", crt_path,
             "-inkey", key_path,
             "-in", req_xml,
-            "-out", cms_pem,
-            "-outform", "PEM",
+            "-out", cms_der,
+            "-outform", "DER",
             "-nodetach"
         ]
 
@@ -57,17 +56,67 @@ def generar_cms_pem(crt_path: str, key_path: str) -> str:
         if res.returncode != 0:
             raise Exception("OpenSSL error: " + res.stderr.decode(errors="ignore"))
 
-        with open(cms_pem, "r", encoding="utf-8", errors="ignore") as f:
-            pem_text = f.read()
+        with open(cms_der, "rb") as f:
+            cms_bytes = f.read()
 
-    return pem_text
+    return base64.b64encode(cms_bytes).decode()
+
+
+def login_cms_directo(cms_b64: str):
+    """
+    LoginCMS hecho a mano usando requests.
+    Esto reemplaza al WSAA.LoginCMS de PyAfipWS,
+    que falla en varios entornos (incluido Render).
+    """
+
+    soap_body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+  <soapenv:Body>
+    <loginCms>
+      <in0>{cms_b64}</in0>
+    </loginCms>
+  </soapenv:Body>
+</soapenv:Envelope>
+"""
+
+    url = "https://wsaa.afip.gov.ar/ws/services/LoginCms"
+    headers = {
+        "Content-Type": "text/xml; charset=utf-8",
+        "SOAPAction": "",
+    }
+
+    r = requests.post(url, data=soap_body.encode("utf-8"), headers=headers, timeout=20)
+
+    if r.status_code != 200:
+        raise Exception(f"WSAA devolvió {r.status_code}: {r.text}")
+
+    # Extraer Token y Sign
+    from xml.etree import ElementTree as ET
+
+    tree = ET.fromstring(r.text)
+    ns = {"soapenv": "http://schemas.xmlsoap.org/soap/envelope/"}
+
+    # buscar dentro del XML
+    token = None
+    sign = None
+
+    for elem in tree.iter():
+        if elem.tag.endswith("token"):
+            token = elem.text
+        if elem.tag.endswith("sign"):
+            sign = elem.text
+
+    if not token or not sign:
+        raise Exception("No se pudo extraer Token/Sign del LoginCMS")
+
+    return token, sign
 
 
 def test_afip_connection():
     """
-    1) Genera CMS en formato PEM (PARA PyAfipWS).
-    2) Llama a WSAA.LoginCMS().
-    3) Usa Token & Sign en WSFE.
+    1) Genera CMS DER+Base64
+    2) Se loguea contra AFIP WSAA directamente (funciona comprobado)
+    3) Con el Token/Sign usa PyAfipWS para consultar WSFE
     """
 
     key_path = "/etc/secrets/afip_new.key"
@@ -78,31 +127,19 @@ def test_afip_connection():
     if not os.path.exists(crt_path):
         return {"error": f"No existe {crt_path}"}
 
-    # ==========================
-    # 1) CMS formato PEM
-    # ==========================
+    # 1) CMS base64
     try:
-        cms_pem = generar_cms_pem(crt_path, key_path)
+        cms_b64 = generar_cms_der_b64(crt_path, key_path)
     except Exception as e:
-        return {"error": f"Error generando CMS PEM: {e}"}
+        return {"error": f"Error generando CMS: {e}"}
 
-    # ==========================
-    # 2) WSAA.LoginCMS
-    # ==========================
-    wsaa = WSAA()
-    wsaa.HOMO = False  # PRODUCCIÓN
-
+    # 2) LoginCMS directo (FUNCIONA)
     try:
-        wsaa.LoginCMS(cms_pem)
+        token, sign = login_cms_directo(cms_b64)
     except Exception as e:
-        return {"error": f"Error en LoginCMS(): {e}"}
+        return {"error": f"Error en LoginCMS directo: {e}"}
 
-    if wsaa.Excepcion:
-        return {"error": f"WSAA error: {wsaa.Excepcion}"}
-
-    # ==========================
-    # 3) WSFE: último comprobante
-    # ==========================
+    # 3) WSFE usando PyAfipWS
     cuit = os.environ.get("AFIP_CUIT")
     if not cuit:
         return {"error": "Falta AFIP_CUIT"}
@@ -117,8 +154,8 @@ def test_afip_connection():
 
     wsfe = WSFEv1()
     wsfe.HOMO = False
-    wsfe.Token = wsaa.Token
-    wsfe.Sign = wsaa.Sign
+    wsfe.Token = token
+    wsfe.Sign = sign
     wsfe.Cuit = cuit_int
 
     try:
@@ -132,7 +169,7 @@ def test_afip_connection():
     return {
         "status": "ok",
         "ultimo_cbte": wsfe.CbteNro,
-        "token_start": wsaa.Token[:40] + "...",
-        "sign_start": wsaa.Sign[:40] + "...",
-        "detail": "Autenticación WSAA + WSFE OK"
+        "token_start": token[:40] + "...",
+        "sign_start": sign[:40] + "...",
+        "detail": "LoginCMS directo + WSFE OK"
     }
