@@ -3,63 +3,110 @@ from pyafipws.wsaa import WSAA
 from pyafipws.wsfev1 import WSFEv1
 
 
-def test_afip_connection():
+def facturar_prueba():
     """
-    Prueba mínima: obtener token desde WSAA y llamar CompUltimoAutorizado en WSFE.
+    Factura mínima para probar WSAA + WSFE en PRODUCCIÓN.
     """
 
-    afip_private_key = os.environ.get("AFIP_CERT_KEY")
-    afip_cert = os.environ.get("AFIP_CERT_CRT")
+    # ==============================
+    # VARIABLES DE ENTORNO
+    # ==============================
+    private_key = os.environ.get("AFIP_CERT_KEY")
+    certificate = os.environ.get("AFIP_CERT_CRT")
     cuit = os.environ.get("AFIP_CUIT")
-    pto_vta = os.environ.get("AFIP_PTO_VTA")
+    pto_vta = int(os.environ.get("AFIP_PTO_VTA", "1"))
 
-    if not afip_private_key:
+    if not private_key:
         raise Exception("AFIP_CERT_KEY no está definida")
-    if not afip_cert:
+    if not certificate:
         raise Exception("AFIP_CERT_CRT no está definida")
     if not cuit:
         raise Exception("AFIP_CUIT no está definida")
-    if not pto_vta:
-        raise Exception("AFIP_PTO_VTA no está definida")
 
-    pto_vta = int(pto_vta)
+    # Guardar en disco (pyafipws lo necesita así)
+    KEY_FILE = "afip.key"
+    CRT_FILE = "afip.crt"
 
-    # ======================
-    # WSAA AUTENTICACIÓN
-    # ======================
+    with open(KEY_FILE, "w") as f:
+        f.write(private_key)
+
+    with open(CRT_FILE, "w") as f:
+        f.write(certificate)
+
+    # ==============================
+    # 1. WSAA AUTENTICACIÓN
+    # ==============================
     wsaa = WSAA()
-    wsaa.HOMO = False      # PRODUCCIÓN
+    wsaa.HOMO = False
     wsaa.Production = True
 
-    wsaa.key = afip_private_key
-    wsaa.crt = afip_cert
+    wsaa.key = private_key
+    wsaa.crt = certificate
 
-    ta = wsaa.Autenticar("wsfe", "TA.xml")
+    ta = wsaa.Autenticar(
+        servicio="wsfe",
+        ta_xml="TA.xml"
+    )
 
     if wsaa.Excepcion:
-        raise Exception(f"WSAA ERROR: {wsaa.Excepcion}")
+        raise Exception(f"WSAA Excepcion: {wsaa.Excepcion}")
+
+    if wsaa.ErrMsg:
+        raise Exception(f"WSAA Error: {wsaa.ErrMsg}")
 
     token = wsaa.Token
     sign = wsaa.Sign
 
-    # ======================
-    # WSFE
-    # ======================
+    # ==============================
+    # 2. WSFE
+    # ==============================
     wsfe = WSFEv1()
     wsfe.HOMO = False
     wsfe.Production = True
-    wsfe.Cuit = int(cuit)
+
     wsfe.Token = token
     wsfe.Sign = sign
+    wsfe.Cuit = int(cuit)
 
-    # Consulta básica
-    wsfe.CompUltimoAutorizado(11, pto_vta)
+    tipo_cbte = 11  # Factura C
+
+    wsfe.CompUltimoAutorizado(tipo_cbte, pto_vta)
+    ultimo = wsfe.CbteNro
+
+    # ==============================
+    # 3. FACTURA DE PRUEBA
+    # ==============================
+    wsfe.CantReg = 1
+    wsfe.PtoVta = pto_vta
+    wsfe.TipoCbte = tipo_cbte
+    wsfe.CbteDesde = ultimo + 1
+    wsfe.CbteHasta = ultimo + 1
+
+    wsfe.Concepto = 1
+    wsfe.TipoDoc = 99
+    wsfe.NroDoc = 0
+
+    wsfe.FchCbte = wsfe.FechadeHoy()
+    wsfe.MonedaId = "PES"
+    wsfe.MonedaCotiz = 1
+
+    wsfe.ImpNeto = 1
+    wsfe.ImpTotal = 1
+    wsfe.ImpIVA = 0
+    wsfe.ImpOpEx = 0
+    wsfe.ImpTrib = 0
+
+    wsfe.CAESolicitar()
+
+    if wsfe.Excepcion:
+        raise Exception(f"WSFE Excepcion: {wsfe.Excepcion}")
 
     if wsfe.ErrMsg:
-        raise Exception(f"WSFE devolvió error: {wsfe.ErrMsg}")
+        raise Exception(f"WSFE Error: {wsfe.ErrMsg}")
 
     return {
-        "ultimo_cbte": wsfe.CbteNro,
-        "pto_vta": pto_vta,
-        "cuit": cuit
+        "Resultado": wsfe.Resultado,
+        "CAE": wsfe.CAE,
+        "Vencimiento": wsfe.Vencimiento,
+        "Numero": wsfe.CbteDesde,
     }
