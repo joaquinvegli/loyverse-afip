@@ -1,7 +1,11 @@
 fastapi
 uvicorn
-requests
-python-dotenv
-zeep
-M2Crypto
 httpx
+python-multipart
+jinja2
+cryptography
+xmltodict
+python-dotenv
+
+# AFIP — instalar SIEMPRE desde git para evitar versiones viejas o rotas
+git+https://github.com/reingart/pyafipws.git
