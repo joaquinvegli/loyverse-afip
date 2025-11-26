@@ -1,6 +1,5 @@
 fastapi
 uvicorn[standard]
-fastapi
-uvicorn[standard]
 httpx
-
+afipws
+python-dotenv
