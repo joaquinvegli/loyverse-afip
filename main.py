@@ -27,3 +27,8 @@ async def test_receipt(receipt_id: str):
 def test_afip():
     result = test_afip_connection()
     return result
+
+@app.get("/debug/cert")
+def debug_cert():
+    import debug_env
+    return {"status": "ok"}
