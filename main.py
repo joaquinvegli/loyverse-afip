@@ -132,9 +132,10 @@ def debug_login_raw():
         except Exception as e:
             return {"error": f"request exception: {e}"}
 
+        # 🔥 ESTA ES LA PARTE MODIFICADA
+        # devolvemos TODO el XML completo SIN recortar
         return {
             "http_status": resp.status_code,
-            "text_start": resp.text[:200],
+            "text": resp.text,   # <-- ahora completo
             "raw_bytes_start": list(resp.content[:20])
         }
-
