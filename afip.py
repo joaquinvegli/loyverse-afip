@@ -1,28 +1,29 @@
 import os
 import subprocess
 import tempfile
+import base64
 from pyafipws.wsaa import WSAA
 from pyafipws.wsfev1 import WSFEv1
 
 
 def test_afip_connection():
     """
-    Prueba WSAA + WSFE usando archivos REALES en Render.
+    Prueba WSAA + WSFE usando key y cert reales desde Secret Files.
     """
 
     # =====================================
-    # 1. ARCHIVOS SECRETOS
+    # 1. ARCHIVOS REALES DESDE SECRET FILES
     # =====================================
     key_path = "/etc/secrets/afip.key"
     crt_path = "/etc/secrets/afip.crt"
 
     if not os.path.exists(key_path):
-        return {"error": "No existe /etc/secrets/afip.key"}
+        return {"error": "Archivo secreto afip.key NO existe en Render"}
 
     if not os.path.exists(crt_path):
-        return {"error": "No existe /etc/secrets/afip.crt"}
+        return {"error": "Archivo secreto afip.crt NO existe en Render"}
 
-    # Leemos EXACTO, en binario, sin interpretar
+    # Leer RAW (sin interpretar texto)
     with open(key_path, "rb") as f:
         private_key = f.read()
 
@@ -33,114 +34,115 @@ def test_afip_connection():
     pto_vta = int(os.environ.get("AFIP_PTO_VTA", "1"))
 
     if not cuit:
-        return {"error": "Falta variable AFIP_CUIT"}
+        return {"error": "Variable AFIP_CUIT no definida"}
 
     # =====================================
-    # 2. GENERAR CMS (OpenSSL DER)
+    # 2. CREAR CMS (binario DER)
     # =====================================
     try:
-        cms = generar_cms_bytes(
-            private_key_bytes=private_key,
-            certificate_bytes=certificate,
-            service="wsfe"
-        )
+        cms_der = generar_cms_bytes(private_key, certificate)
     except Exception as e:
         return {"error": f"Error generando CMS: {str(e)}"}
 
     # =====================================
-    # 3. WSAA: LoginCMS
+    # 3. WSAA — LoginCMS en producción
     # =====================================
     wsaa = WSAA()
-    wsaa.HOMO = False   # PRODUCCIÓN
+    wsaa.HOMO = False  # siempre producción AFIP
 
-    ta = wsaa.LoginCMS(cms)
+    # Convertir DER → Base64 → UTF8 → string
+    cms_b64 = base64.b64encode(cms_der).decode("ascii")
+
+    try:
+        ta = wsaa.loginCms(cms_b64)
+    except Exception as e:
+        return {"error": f"Error en loginCms(): {str(e)}"}
 
     if wsaa.Excepcion:
-        return {"error": f"WSAA: {wsaa.Excepcion}"}
-
-    if not wsaa.Token or not wsaa.Sign:
-        return {"error": "WSAA no devolvió token/sign"}
+        return {"error": f"WSAA Excepcion: {wsaa.Excepcion}"}
 
     # =====================================
-    # 4. WSFE
+    # 4. WSFE — consultar último comprobante
     # =====================================
     wsfe = WSFEv1()
     wsfe.Cuit = int(cuit)
-    wsfe.HOMO = False
-    wsfe.Token = wsaa.Token
     wsfe.Sign = wsaa.Sign
+    wsfe.Token = wsaa.Token
+    wsfe.HOMO = False  # producción
 
     tipo_cbte = 11  # Factura C
 
     try:
         wsfe.CompUltimoAutorizado(tipo_cbte, pto_vta)
     except Exception as e:
-        return {"error": f"WSFE error: {str(e)}"}
+        return {"error": f"Error en WSFE.CompUltimoAutorizado: {str(e)}"}
 
     if wsfe.ErrMsg:
-        return {"error": f"AFIP devolvió error: {wsfe.ErrMsg}"}
+        return {"error": f"WSFE devolvió error: {wsfe.ErrMsg}"}
 
+    # =====================================
+    # RESPUESTA OK
+    # =====================================
     return {
         "status": "ok",
-        "ultimo_cbte": wsfe.CbteNro,
         "pto_vta": pto_vta,
-        "token": wsaa.Token[:30] + "...",
-        "sign": wsaa.Sign[:30] + "..."
+        "ultimo_cbte": wsfe.CbteNro,
+        "token_start": wsaa.Token[:40] + "...",
+        "sign_start": wsaa.Sign[:40] + "..."
     }
 
 
 def generar_cms_bytes(private_key_bytes, certificate_bytes, service="wsfe"):
     """
-    Genera CMS para WSAA usando OpenSSL en formato DER.
+    Genera un CMS firmado (DER binario) para AFIP WSAA usando OpenSSL.
     """
-    with tempfile.TemporaryDirectory() as tmp:
 
+    with tempfile.TemporaryDirectory() as tmp:
         key_file = os.path.join(tmp, "afip.key")
         crt_file = os.path.join(tmp, "afip.crt")
-        xml_file = os.path.join(tmp, "login.xml")
-        cms_file = os.path.join(tmp, "login.cms")
+        xml_in = os.path.join(tmp, "req.xml")
+        cms_out = os.path.join(tmp, "req.cms")
 
-        # Escribir archivos EXACTOS
+        # Guardar archivos EXACTOS
         with open(key_file, "wb") as f:
             f.write(private_key_bytes)
 
         with open(crt_file, "wb") as f:
             f.write(certificate_bytes)
 
-        # Crear XML con fechas amplias
-        xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+        # XML del LoginTicketRequest
+        login_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <loginTicketRequest version="1.0">
   <header>
-    <uniqueId>123</uniqueId>
-    <generationTime>2020-01-01T00:00:00-03:00</generationTime>
+    <uniqueId>1</uniqueId>
+    <generationTime>2024-01-01T00:00:00-03:00</generationTime>
     <expirationTime>2030-01-01T00:00:00-03:00</expirationTime>
   </header>
   <service>{service}</service>
 </loginTicketRequest>
 """
 
-        with open(xml_file, "w", encoding="utf-8") as f:
-            f.write(xml)
+        with open(xml_in, "w", encoding="utf-8") as f:
+            f.write(login_xml)
 
-        # Ejecutar OpenSSL para firmar CMS (DER)
+        # OpenSSL → firmar CMS
         cmd = [
             "openssl", "smime",
             "-sign",
             "-binary",
             "-signer", crt_file,
             "-inkey", key_file,
-            "-in", xml_file,
-            "-out", cms_file,
+            "-in", xml_in,
+            "-out", cms_out,
             "-outform", "DER",
             "-nodetach"
         ]
 
-        result = subprocess.run(cmd, capture_output=True)
+        res = subprocess.run(cmd, capture_output=True)
 
-        if result.returncode != 0:
-            err = result.stderr.decode(errors="ignore")
-            raise Exception(f"OpenSSL error: {err}")
+        if res.returncode != 0:
+            err = res.stderr.decode(errors="ignore")
+            raise Exception(f"openssl error: {err}")
 
-        # Leer CMS binario
-        with open(cms_file, "rb") as f:
+        with open(cms_out, "rb") as f:
             return f.read()
