@@ -5,8 +5,6 @@ import base64
 import requests
 from datetime import datetime, timedelta, timezone
 
-from pyafipws.wsfev1 import WSFEv1
-
 
 # ======================================================
 # 1) GENERAR CMS DER → BASE64  (como /debug/login_raw)
@@ -68,11 +66,11 @@ def generar_cms_der_b64(crt_path: str, key_path: str) -> str:
 
 
 # ======================================================
-# 2) LOGINCMS DIRECTO (sin PyAfipWS, con parser correcto)
+# 2) LOGINCMS DIRECTO (WSAA) – PARSEA TOKEN Y SIGN
 # ======================================================
 def login_cms_directo(cms_b64: str):
     """
-    LoginCMS por requests directamente, como en /debug/login_raw.
+    LoginCMS por requests directamente (WSAA).
     Extrae Token & Sign desde el XML interno escapado que devuelve AFIP.
     """
     import html
@@ -136,13 +134,87 @@ def login_cms_directo(cms_b64: str):
 
 
 # ======================================================
-# 3) WSFE CON PYAFIPWS (Token & Sign válidos)
+# 3) WSFE – FECompUltimoAutorizado DIRECTO CON SOAP
+# ======================================================
+def wsfe_ultimo_comprobante(token: str, sign: str, cuit: int, pto_vta: int, tipo_cbte: int):
+    """
+    Llama a FECompUltimoAutorizado del WSFEv1 directamente con SOAP.
+    Devuelve el número de último comprobante autorizado.
+    """
+    from xml.etree import ElementTree as ET
+
+    # Podés cambiar a homologación seteando AFIP_WSFE_URL si alguna vez lo necesitás
+    wsfe_url = os.environ.get("AFIP_WSFE_URL", "https://servicios1.afip.gov.ar/wsfev1/service.asmx")
+
+    soap_body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ar="http://ar.gov.afip.dif.FEV1/">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <ar:FECompUltimoAutorizado>
+      <ar:Auth>
+        <ar:Token>{token}</ar:Token>
+        <ar:Sign>{sign}</ar:Sign>
+        <ar:Cuit>{cuit}</ar:Cuit>
+      </ar:Auth>
+      <ar:PtoVta>{pto_vta}</ar:PtoVta>
+      <ar:CbteTipo>{tipo_cbte}</ar:CbteTipo>
+    </ar:FECompUltimoAutorizado>
+  </soapenv:Body>
+</soapenv:Envelope>
+"""
+
+    headers = {
+        "Content-Type": "text/xml; charset=utf-8",
+        "SOAPAction": "http://ar.gov.afip.dif.FEV1/FECompUltimoAutorizado",
+    }
+
+    r = requests.post(wsfe_url, data=soap_body.encode("utf-8"), headers=headers, timeout=20)
+
+    if r.status_code != 200:
+        raise Exception(f"WSFEv1 devolvió {r.status_code}: {r.text}")
+
+    tree = ET.fromstring(r.text)
+
+    # Buscar CbteNro en la respuesta
+    cbte_nro = None
+    for elem in tree.iter():
+        if elem.tag.endswith("CbteNro"):
+            try:
+                cbte_nro = int(elem.text)
+            except (TypeError, ValueError):
+                cbte_nro = None
+            break
+
+    # Si hay errores, intento devolver el mensaje de AFIP
+    if cbte_nro is None:
+        errores = []
+        for elem in tree.iter():
+            if elem.tag.endswith("Err"):
+                code = None
+                msg = None
+                for child in elem:
+                    if child.tag.endswith("Code"):
+                        code = child.text
+                    if child.tag.endswith("Msg"):
+                        msg = child.text
+                if code or msg:
+                    errores.append(f"{code}: {msg}")
+        if errores:
+            raise Exception("WSFEv1 errores: " + " | ".join(errores))
+        else:
+            raise Exception("No se pudo obtener CbteNro de la respuesta de WSFEv1")
+
+    return cbte_nro
+
+
+# ======================================================
+# 4) FUNCIÓN QUE USA TODO LO ANTERIOR – /test/afip
 # ======================================================
 def test_afip_connection():
     """
     1) Genera CMS DER+Base64 con TZ correcto
-    2) LoginCMS directo (comprobado que funciona)
-    3) WSFE último comprobante autorizado (PyAfipWS)
+    2) LoginCMS directo (WSAA)
+    3) WSFEv1 FECompUltimoAutorizado con SOAP directo
     """
 
     key_path = "/etc/secrets/afip_new.key"
@@ -153,19 +225,19 @@ def test_afip_connection():
     if not os.path.exists(crt_path):
         return {"error": f"No existe {crt_path}"}
 
-    # 1) CMS DER+BASE64 (igual al que funciona en debug)
+    # 1) CMS DER+BASE64 (igual al que ya probaste en /debug/login_raw)
     try:
         cms_b64 = generar_cms_der_b64(crt_path, key_path)
     except Exception as e:
         return {"error": f"Error generando CMS: {e}"}
 
-    # 2) LoginCMS directo a AFIP (esto FUNCIONA)
+    # 2) LoginCMS directo a AFIP (WSAA)
     try:
         token, sign = login_cms_directo(cms_b64)
     except Exception as e:
         return {"error": f"Error en LoginCMS directo: {e}"}
 
-    # 3) WSFE usando PyAfipWS
+    # 3) WSFE – FECompUltimoAutorizado
     cuit = os.environ.get("AFIP_CUIT")
     if not cuit:
         return {"error": "Falta AFIP_CUIT en variables de entorno"}
@@ -176,26 +248,17 @@ def test_afip_connection():
         return {"error": f"AFIP_CUIT inválido: {cuit}"}
 
     pto_vta = int(os.environ.get("AFIP_PTO_VTA", "1"))
-    tipo_cbte = 11  # Factura C
-
-    wsfe = WSFEv1()
-    wsfe.HOMO = False
-    wsfe.Token = token
-    wsfe.Sign = sign
-    wsfe.Cuit = cuit_int
+    tipo_cbte = int(os.environ.get("AFIP_TIPO_CBTE", "11"))  # 11 = Factura C por defecto
 
     try:
-        wsfe.CompUltimoAutorizado(tipo_cbte, pto_vta)
+        ultimo_cbte = wsfe_ultimo_comprobante(token, sign, cuit_int, pto_vta, tipo_cbte)
     except Exception as e:
         return {"error": f"WSFE error: {e}"}
 
-    if wsfe.Excepcion:
-        return {"error": f"WSFE error: {wsfe.Excepcion}"}
-
     return {
         "status": "ok",
-        "ultimo_cbte": wsfe.CbteNro,
+        "ultimo_cbte": ultimo_cbte,
         "token_start": token[:40] + "...",
         "sign_start": sign[:40] + "...",
-        "detail": "LoginCMS directo + WSFE OK"
+        "detail": "LoginCMS directo + WSFEv1 FECompUltimoAutorizado OK"
     }
