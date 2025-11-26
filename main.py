@@ -12,9 +12,6 @@ def root():
 
 @app.get("/test/afip")
 def test_afip():
-    """
-    Prueba completa usando PyAfipWS (afip.py).
-    """
     try:
         result = test_afip_connection()
         return {"status": "ok", "data": result}
@@ -24,10 +21,6 @@ def test_afip():
 
 @app.get("/debug/afip-files")
 def debug_files():
-    """
-    Muestra los primeros bytes de los archivos de certificados/keys
-    que estás usando realmente (afip_new.*).
-    """
     try:
         with open("/etc/secrets/afip_new.key", "rb") as f:
             key_bytes = f.read()
@@ -41,21 +34,16 @@ def debug_files():
             "key_text_start": key_bytes[:200].decode("latin1", errors="replace"),
             "crt_text_start": crt_bytes[:200].decode("latin1", errors="replace"),
         }
-
     except Exception as e:
         return {"error": str(e)}
 
 
-# Si tenés un router extra en debug.py lo seguimos incluyendo
 from debug import router as debug_router
 app.include_router(debug_router)
 
 
 @app.get("/debug/wsdl2")
 def debug_wsdl2():
-    """
-    Verifica que se pueda descargar el WSDL de AFIP y que 'requests' funcione.
-    """
     import traceback
     import requests
 
@@ -65,21 +53,18 @@ def debug_wsdl2():
         return {
             "status": r.status_code,
             "headers": dict(r.headers),
-            "first_200": r.text[:200]
+            "first_200": r.text[:200],
         }
     except Exception as e:
         return {
             "error": str(e),
             "type": str(type(e)),
-            "trace": traceback.format_exc()
+            "trace": traceback.format_exc(),
         }
 
 
 @app.get("/debug/imports")
 def debug_imports():
-    """
-    Verifica que el módulo 'requests' esté instalado y accesible.
-    """
     try:
         import requests
         return {"status": "ok", "requests_version": requests.__version__}
@@ -90,11 +75,8 @@ def debug_imports():
 @app.get("/debug/login_raw")
 def debug_login_raw():
     """
-    Prueba de conexión directa al WSAA de AFIP sin PyAfipWS:
-    - Genera el CMS con openssl (DER binario)
-    - Lo pasa a base64
-    - Lo manda dentro de un sobre SOAP (como AFIP exige)
-    Esto sirve para ver si el certificado, la clave y la conexión están OK.
+    Genera un CMS DER, lo pasa a base64, y lo envía dentro de un sobre SOAP.
+    Esto permite probar la conexión real con el WSAA de AFIP sin PyAfipWS.
     """
     import os
     import subprocess
@@ -111,7 +93,6 @@ def debug_login_raw():
     if not os.path.exists(crt_path):
         return {"error": f"NO existe {crt_path}"}
 
-    # 1) XML del loginTicketRequest (puede ajustarse luego para fechas dinámicas)
     xml_data = """<?xml version="1.0" encoding="UTF-8"?>
 <loginTicketRequest version="1.0">
   <header>
@@ -127,5 +108,59 @@ def debug_login_raw():
         req_xml = os.path.join(tmp, "req.xml")
         cms_der = os.path.join(tmp, "req.cms")
 
-        # Guardamos el XML
-        with open(req_xml, "_
+        # escribir XML
+        with open(req_xml, "w", encoding="utf-8") as f:
+            f.write(xml_data)
+
+        # generar CMS DER
+        cmd = [
+            "openssl", "smime", "-sign",
+            "-binary",
+            "-signer", crt_path,
+            "-inkey", key_path,
+            "-in", req_xml,
+            "-out", cms_der,
+            "-outform", "DER",
+            "-nodetach",
+        ]
+
+        res = subprocess.run(cmd, capture_output=True)
+        if res.returncode != 0:
+            return {
+                "error": "OpenSSL error",
+                "returncode": res.returncode,
+                "stderr": res.stderr.decode(errors="ignore"),
+            }
+
+        with open(cms_der, "rb") as f:
+            cms_bytes = f.read()
+
+    # base64 del CMS DER
+    cms_b64 = base64.b64encode(cms_bytes).decode()
+
+    # sobre SOAP correcto
+    soap_body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+  <soapenv:Body>
+    <loginCms>
+      <in0>{cms_b64}</in0>
+    </loginCms>
+  </soapenv:Body>
+</soapenv:Envelope>
+"""
+
+    url = "https://wsaa.afip.gov.ar/ws/services/LoginCms"
+    headers = {
+        "Content-Type": "text/xml; charset=utf-8",
+        "SOAPAction": "",
+    }
+
+    try:
+        resp = requests.post(url, data=soap_body.encode("utf-8"), headers=headers, timeout=20)
+    except Exception as e:
+        return {"error": f"request exception: {e}"}
+
+    return {
+        "http_status": resp.status_code,
+        "text": resp.text[:4000],
+    }
