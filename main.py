@@ -34,3 +34,7 @@ def debug_files():
 
     except Exception as e:
         return {"error": str(e)}
+
+from debug import router as debug_router
+app.include_router(debug_router)
+
