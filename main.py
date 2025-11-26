@@ -43,3 +43,12 @@ def debug_key():
         "contains_literal_n": "\\n" in key,
         "lines": key.count("\n")
     }
+@app.get("/debug/key2")
+def debug_key2():
+    raw = os.environ.get("AFIP_CERT_KEY", "")
+    safe = repr(raw)  # convierte saltos de línea reales en '\n' visibles
+    return {
+        "len": len(raw),
+        "repr": safe[:500]  # mostramos solo los primeros 500 chars
+    }
+
