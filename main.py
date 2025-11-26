@@ -66,3 +66,75 @@ def debug_imports():
     except Exception as e:
         return {"error": str(e)}
 
+@app.get("/debug/login_raw")
+def debug_login_raw():
+    import os
+    import subprocess
+    import tempfile
+    import requests
+
+    key_path = "/etc/secrets/afip_new.key"
+    crt_path = "/etc/secrets/afip_new.crt"
+
+    if not os.path.exists(key_path):
+        return {"error": f"NO existe {key_path}"}
+
+    if not os.path.exists(crt_path):
+        return {"error": f"NO existe {crt_path}"}
+
+    # 1) Crear XML del requerimiento
+    xml_data = """<?xml version="1.0" encoding="UTF-8"?>
+<loginTicketRequest version="1.0">
+  <header>
+    <uniqueId>1</uniqueId>
+    <generationTime>2025-01-01T00:00:00-03:00</generationTime>
+    <expirationTime>2030-01-01T00:00:00-03:00</expirationTime>
+  </header>
+  <service>wsfe</service>
+</loginTicketRequest>
+"""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        req_xml = os.path.join(tmp, "req.xml")
+        cms_out = os.path.join(tmp, "req.cms")
+
+        with open(req_xml, "w", encoding="utf-8") as f:
+            f.write(xml_data)
+
+        # 2) Ejecutar OpenSSL para firmar CMS
+        cmd = [
+            "openssl", "smime", "-sign",
+            "-binary",
+            "-signer", crt_path,
+            "-inkey", key_path,
+            "-in", req_xml,
+            "-out", cms_out,
+            "-outform", "DER",
+            "-nodetach"
+        ]
+
+        res = subprocess.run(cmd, capture_output=True)
+        if res.returncode != 0:
+            return {
+                "error": "OpenSSL error",
+                "stderr": res.stderr.decode(errors="ignore")
+            }
+
+        with open(cms_out, "rb") as f:
+            cms_bytes = f.read()
+
+        # 3) Mandarlo directo a AFIP
+        url = "https://wsaa.afip.gov.ar/ws/services/LoginCms"
+        headers = {"Content-Type": "application/octet-stream"}
+
+        try:
+            resp = requests.post(url, headers=headers, data=cms_bytes)
+        except Exception as e:
+            return {"error": f"request exception: {e}"}
+
+        return {
+            "http_status": resp.status_code,
+            "text_start": resp.text[:200],
+            "raw_bytes_start": list(resp.content[:20])
+        }
+
