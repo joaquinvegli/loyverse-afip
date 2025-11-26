@@ -2,4 +2,4 @@ fastapi
 uvicorn
 httpx
 python-multipart
-git+https://github.com/reingart/pyafipws.git
+git+https://github.com/reingart/pyafipws.git#egg=pyafipws
