@@ -2,4 +2,6 @@ fastapi
 uvicorn
 httpx
 python-multipart
-pyafipws==2.7.1512
+
+# PyAFIPWS compatibilidad Python 3 — commit fijo estable
+git+https://github.com/reingart/pyafipws.git@3f0e9cef5b8d3b58c8c9246b4ac95e2990e7d3d1#egg=pyafipws
