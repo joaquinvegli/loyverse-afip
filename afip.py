@@ -19,21 +19,21 @@ def test_afip_connection():
         return {"error": f"No existe {crt_path}"}
 
     # ===============================
-    # 2) Generar CMS usando OpenSSL
+    # 2) Generar CMS en formato PEM
     # ===============================
     try:
-        cms_bytes = generar_cms(crt_path, key_path)
+        cms_text = generar_cms_pem(crt_path, key_path)
     except Exception as e:
         return {"error": f"Error generando CMS: {str(e)}"}
 
     # ===============================
-    # 3) Llamar a WSAA.LoginCMS(cms)
+    # 3) Llamar a WSAA.LoginCMS()
     # ===============================
     wsaa = WSAA()
-    wsaa.HOMO = False  # producción
+    wsaa.HOMO = False  # PRODUCCIÓN
 
     try:
-        wsaa.LoginCMS(cms_bytes)
+        wsaa.LoginCMS(cms_text)
     except Exception as e:
         return {"error": f"Error en LoginCMS(): {str(e)}"}
 
@@ -41,7 +41,7 @@ def test_afip_connection():
         return {"error": f"WSAA error: {wsaa.Excepcion}"}
 
     # ===============================
-    # 4) Consumir WSFE
+    # 4) Consumir WSFE para verificar
     # ===============================
     wsfe = WSFEv1()
     wsfe.HOMO = False
@@ -69,20 +69,21 @@ def test_afip_connection():
         "status": "ok",
         "ultimo_cbte": wsfe.CbteNro,
         "token": wsaa.Token[:25] + "...",
-        "sign": wsaa.Sign[:25] + "..."
+        "sign": wsaa.Sign[:25] + "...",
+        "detail": "Autenticación y WSFE OK"
     }
 
 
-def generar_cms(crt_path, key_path):
+def generar_cms_pem(crt_path, key_path):
     """
-    Genera el CMS en formato DER usando OpenSSL.
+    Genera el CMS en formato PEM (NO DER, NO binario).
+    PyAfipWS SOLO acepta PEM/base64.
     """
 
     with tempfile.TemporaryDirectory() as tmp:
         req_xml = os.path.join(tmp, "req.xml")
-        cms_out = os.path.join(tmp, "req.cms")
+        cms_out = os.path.join(tmp, "req.pem")
 
-        # Generar XML base
         xml_data = """<?xml version="1.0" encoding="UTF-8"?>
 <loginTicketRequest version="1.0">
   <header>
@@ -97,16 +98,17 @@ def generar_cms(crt_path, key_path):
         with open(req_xml, "w", encoding="utf-8") as f:
             f.write(xml_data)
 
-        # Ejecutar OpenSSL
+        # ================================
+        # CMS → PEM (obligatorio para PyAfipWS)
+        # ================================
         cmd = [
             "openssl", "smime",
             "-sign",
-            "-binary",
             "-signer", crt_path,
             "-inkey", key_path,
             "-in", req_xml,
             "-out", cms_out,
-            "-outform", "DER",
+            "-outform", "PEM",
             "-nodetach"
         ]
 
@@ -115,5 +117,5 @@ def generar_cms(crt_path, key_path):
         if res.returncode != 0:
             raise Exception(res.stderr.decode(errors="ignore"))
 
-        with open(cms_out, "rb") as f:
+        with open(cms_out, "r", encoding="utf-8", errors="ignore") as f:
             return f.read()
