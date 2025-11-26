@@ -58,3 +58,11 @@ def debug_wsdl2():
             "trace": traceback.format_exc()
         }
 
+@app.get("/debug/imports")
+def debug_imports():
+    try:
+        import requests
+        return {"status": "ok", "requests_version": requests.__version__}
+    except Exception as e:
+        return {"error": str(e)}
+
