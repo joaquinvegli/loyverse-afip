@@ -32,3 +32,14 @@ def test_afip():
         return {"status": "ok", "factura": result}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get("/debug/key")
+def debug_key():
+    key = os.environ.get("AFIP_CERT_KEY", "")
+    return {
+        "len": len(key),
+        "preview_start": key[:80],
+        "preview_end": key[-80:],
+        "contains_literal_n": "\\n" in key,
+        "lines": key.count("\n")
+    }
