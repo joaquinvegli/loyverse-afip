@@ -2,7 +2,6 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from loyverse import get_receipts, get_receipt
 from afip import facturar_prueba
-import os
 
 app = FastAPI()
 
@@ -29,7 +28,8 @@ async def test_receipt(receipt_id: str):
 @app.get("/test/afip")
 def test_afip():
     try:
-        data = facturar_prueba()
-        return {"status": "ok", "factura": data}
+        result = facturar_prueba()
+        return {"status": "ok", "factura": result}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
