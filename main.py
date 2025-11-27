@@ -19,11 +19,12 @@ app = FastAPI()
 # ============================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,   # 🔥 FIX PARA STACKBLITZ
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 
 # ============================================================
@@ -254,3 +255,4 @@ def debug_wsaa_client():
         "client_type": str(type(wsaa.client)),
         "methods": dir(wsaa.client) if wsaa.client else None,
     }
+
