@@ -3,6 +3,16 @@ from fastapi.responses import JSONResponse
 from afip import test_afip_connection
 
 app = FastAPI()
+from fastapi.middleware.cors import CORSMiddleware
+
+# permitir frontend en stackblitz
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # luego lo restringimos a tu dominio
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")
@@ -233,4 +243,5 @@ def debug_wsaa_client():
         "client_type": str(type(wsaa.client)),
         "methods": dir(wsaa.client) if wsaa.client else None
     }
+
 
