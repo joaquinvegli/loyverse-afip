@@ -62,12 +62,17 @@ async def get_customer(customer_id: str):
 
 
 # ============================================
-# NORMALIZADOR (conservar igual)
+# NORMALIZADOR (corregido)
 # ============================================
 def normalize_receipt(r: dict) -> dict:
     """
     Convierte una venta de Loyverse al formato que necesita tu web app.
     """
+
+    # EXTRAER ID REAL DEL CLIENTE (FIX)
+    # Loyverse usa r["customer"]["id"], no "customer_id"
+    customer_obj = r.get("customer") or {}
+    customer_id = customer_obj.get("id")
 
     return {
         "receipt_id": r.get("receipt_number"),
@@ -76,8 +81,8 @@ def normalize_receipt(r: dict) -> dict:
         "total": r.get("total_money"),
         "descuento_total": r.get("total_discount", 0),
 
-        # Cliente (si existe)
-        "cliente_id": r.get("customer_id"),
+        # Cliente (FIX aplicado)
+        "cliente_id": customer_id,
 
         # Items
         "items": [
