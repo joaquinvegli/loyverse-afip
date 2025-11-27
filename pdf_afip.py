@@ -1,187 +1,147 @@
-# pdf_afip.py
 import os
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.lib import colors
-from reportlab.platypus import Image
 from datetime import datetime
-import qrcode
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
+from reportlab.lib.colors import Color, black
 
-# ============================================================
-# GENERAR PDF PROFESIONAL DE FACTURA C
-# ============================================================
+# -----------------------------
+# PALETA DE COLORES
+# -----------------------------
+COLOR_PRIMARIO = Color(0.027, 0.133, 0.282)   # #072248
+COLOR_SEC1 = Color(0.976, 0.592, 0.0)         # #F89700
+COLOR_SEC2 = Color(0.113, 0.584, 0.760)       # #1D95C2
+COLOR_SEC3 = Color(0.937, 0.078, 0.463)       # #EF1476
+COLOR_SEC4 = Color(0.875, 0.863, 0.0)         # #DFDC00
 
-def generar_pdf_factura(
+def generar_pdf_factura_c(
+    razon_social: str,
+    domicilio: str,
+    cuit: str,
+    pto_vta: int,
     cbte_nro: int,
+    fecha: str,
     cae: str,
-    vto_cae: str,
-    fecha_cbte: str,
+    cae_vto: str,
     cliente_nombre: str,
     cliente_dni: str,
-    cliente_email: str,
     items: list,
     total: float,
 ):
     """
-    Genera un PDF profesional usando ReportLab.
-    Devuelve path del PDF generado.
+    Genera un PDF de Factura C AFIP con diseño embellecido + logo.
+    Devuelve la ruta local al archivo PDF creado.
     """
 
-    # ---------- Paths ----------
-    output_path = f"/tmp/FacturaC_{cbte_nro}.pdf"
-    logo_path = "./static/logo.png"
+    # -------------------------------------
+    # Carpeta donde se van a guardar los PDFs
+    # -------------------------------------
+    folder = "generated_pdfs"
+    os.makedirs(folder, exist_ok=True)
 
-    punto_venta = os.environ.get("AFIP_PTO_VTA", "1")
-    pto_vta_fmt = str(punto_venta).zfill(4)
-    cbte_fmt = str(cbte_nro).zfill(8)
+    filename = f"{folder}/factura_C_{pto_vta:04d}_{cbte_nro:08d}.pdf"
 
-    # ---------- Fecha DD/MM/AAAA ----------
-    try:
-        fecha_formateada = datetime.strptime(fecha_cbte, "%Y%m%d").strftime("%d/%m/%Y")
-    except:
-        fecha_formateada = fecha_cbte
+    c = canvas.Canvas(filename, pagesize=A4)
+    width, height = A4
 
-    # ---------- Crear PDF ----------
-    c = canvas.Canvas(output_path, pagesize=A4)
-    w, h = A4
-
-    # Paleta recomendada
-    azul = colors.HexColor("#072248")
-    naranja = colors.HexColor("#F89700")
-    celeste = colors.HexColor("#1D95C2")
-    rosa = colors.HexColor("#EF1476")
-    amarillo = colors.HexColor("#DFDC00")
-
-    # ============================================================
-    # LOGO
-    # ============================================================
+    # -------------------------------------
+    # Logo
+    # -------------------------------------
+    logo_path = "static/logo.png"
     if os.path.exists(logo_path):
-        c.drawImage(logo_path, 15*mm, h - 40*mm, width=45*mm, height=35*mm, preserveAspectRatio=True)
+        logo = ImageReader(logo_path)
+        c.drawImage(logo, 40, height - 120, width=120, preserveAspectRatio=True, mask='auto')
 
-    # ============================================================
-    # TÍTULO
-    # ============================================================
-    c.setFont("Helvetica-Bold", 20)
-    c.setFillColor(azul)
-    c.drawString(70*mm, h - 25*mm, "FACTURA C")
+    # -------------------------------------
+    # Encabezado azul
+    # -------------------------------------
+    c.setFillColor(COLOR_PRIMARIO)
+    c.rect(0, height - 40, width, 40, fill=True, stroke=False)
 
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(70*mm, h - 32*mm, f"Punto de Venta: {pto_vta_fmt}  |  Comp. Nº {pto_vta_fmt}-{cbte_fmt}")
+    c.setFillColor(black)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(180, height - 30, "FACTURA C")
 
-    # ============================================================
-    # DATOS DEL EMISOR (VOS)
-    # ============================================================
-    c.setFillColor(colors.black)
-    y = h - 55*mm
-
+    # -------------------------------------
+    # Datos del negocio
+    # -------------------------------------
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(15*mm, y, "Emisor:")
-    y -= 5*mm
+    c.drawString(40, height - 150, razon_social)
 
     c.setFont("Helvetica", 10)
-    c.drawString(15*mm, y, "JOAQUIN VEGLI")
-    y -= 5*mm
-    c.drawString(15*mm, y, "CUIT: 20-39157186-5")
-    y -= 5*mm
-    c.drawString(15*mm, y, "Responsable Monotributo")
-    y -= 5*mm
-    c.drawString(15*mm, y, "Alsina 155 Local 15, Bahía Blanca, Buenos Aires, CP 8000")
+    c.drawString(40, height - 165, domicilio)
+    c.drawString(40, height - 180, f"CUIT: {cuit}")
 
-    # ============================================================
-    # DATOS DEL CLIENTE
-    # ============================================================
-    y -= 15*mm
+    # Punto de venta desde ENV
+    c.drawString(40, height - 195, f"Punto de Venta: {pto_vta:04d}")
+    c.drawString(220, height - 195, f"Comp. Nº: {cbte_nro:08d}")
+
+    c.drawString(40, height - 210, f"Fecha: {fecha}")
+
+    # -------------------------------------
+    # Datos del cliente
+    # -------------------------------------
     c.setFont("Helvetica-Bold", 11)
-    c.setFillColor(azul)
-    c.drawString(15*mm, y, "Datos del Cliente")
-    y -= 4*mm
+    c.drawString(40, height - 240, "Datos del Cliente")
 
-    c.setFillColor(colors.black)
+    c.setFont("Helvetica", 10)
+    c.drawString(40, height - 255, f"Nombre: {cliente_nombre}")
+
+    if cliente_dni:
+        c.drawString(40, height - 270, f"DNI: {cliente_dni}")
+    else:
+        c.drawString(40, height - 270, "DNI: Consumidor Final")
+
+    # -------------------------------------
+    # Tabla productos
+    # -------------------------------------
+    y = height - 310
+
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(40, y, "Descripción")
+    c.drawString(300, y, "Cant.")
+    c.drawString(360, y, "Precio")
+    c.drawString(440, y, "Subtotal")
+
+    y -= 10
+    c.setStrokeColor(COLOR_SEC1)
+    c.line(40, y, width - 40, y)
+    y -= 20
+
     c.setFont("Helvetica", 10)
 
-    c.drawString(15*mm, y, f"Nombre: {cliente_nombre}")
-    y -= 5*mm
-    c.drawString(15*mm, y, f"DNI: {cliente_dni or 'Consumidor Final'}")
-    y -= 5*mm
-    if cliente_email:
-        c.drawString(15*mm, y, f"Email: {cliente_email}")
-        y -= 5*mm
+    for it in items:
+        desc = it["descripcion"]
+        cant = it["cantidad"]
+        precio = it["precio"]
+        st = cant * precio
 
-    # ============================================================
-    # ITEMS
-    # ============================================================
-    y -= 10*mm
-    c.setFont("Helvetica-Bold", 11)
-    c.setFillColor(azul)
-    c.drawString(15*mm, y, "Detalle de Productos")
-    y -= 6*mm
+        c.drawString(40, y, desc[:40])
+        c.drawString(300, y, str(cant))
+        c.drawString(360, y, f"${precio:.2f}")
+        c.drawString(440, y, f"${st:.2f}")
+        y -= 18
 
-    c.setFillColor(colors.black)
-    c.setFont("Helvetica", 9)
-
-    for item in items:
-        texto = f"{item['nombre']}  x{item['cantidad']}  -  ${item['precio_unitario']}"
-        c.drawString(15*mm, y, texto)
-        y -= 5*mm
-
-        if y < 40*mm:  # Nueva página si hace falta
-            c.showPage()
-            y = h - 30*mm
-
+    # -------------------------------------
     # Total
-    y -= 8*mm
-    c.setFont("Helvetica-Bold", 12)
-    c.setFillColor(naranja)
-    c.drawString(15*mm, y, f"TOTAL: ${total}")
-    c.setFillColor(colors.black)
+    # -------------------------------------
+    c.setFont("Helvetica-Bold", 13)
+    c.setFillColor(COLOR_SEC2)
+    c.drawString(40, y - 10, f"TOTAL: ${total:.2f}")
+    c.setFillColor(black)
 
-    # ============================================================
-    # CAE y VENCIMIENTO
-    # ============================================================
-    y -= 15*mm
-    c.setFont("Helvetica-Bold", 11)
-    c.setFillColor(azul)
-    c.drawString(15*mm, y, "Datos AFIP")
-    y -= 6*mm
-
-    c.setFillColor(colors.black)
+    # -------------------------------------
+    # CAE
+    # -------------------------------------
+    y -= 40
     c.setFont("Helvetica", 10)
-    c.drawString(15*mm, y, f"CAE: {cae}")
-    y -= 5*mm
-    c.drawString(15*mm, y, f"Vto CAE: {vto_cae}")
-    y -= 10*mm
+    c.drawString(40, y, f"CAE: {cae}")
+    c.drawString(200, y, f"Vto. CAE: {cae_vto}")
 
-    # ============================================================
-    # QR OBLIGATORIO
-    # ============================================================
-    qr_data = (
-        f"https://www.afip.gob.ar/fe/qr/?p="
-        f"{{"
-        f"\"ver\":1,"
-        f"\"fecha\":\"{fecha_formateada}\","
-        f"\"cuit\":20391571865,"
-        f"\"ptoVta\":{int(punto_venta)},"
-        f"\"tipoCmp\":11,"
-        f"\"nroCmp\":{cbte_nro},"
-        f"\"importe\":{total},"
-        f"\"moneda\":\"PES\","
-        f"\"ctz\":1,"
-        f"\"tipoDocRec\":96,"
-        f"\"nroDocRec\":{cliente_dni or 0},"
-        f"\"codAut\":{cae}"
-        f"}}"
-    )
-
-    qr_img = qrcode.make(qr_data)
-    qr_path = f"/tmp/qr_{cbte_nro}.png"
-    qr_img.save(qr_path)
-
-    c.drawImage(qr_path, 150*mm, 15*mm, width=40*mm, height=40*mm)
-
-    # ============================================================
-    # FINALIZAR PDF
-    # ============================================================
+    # -------------------------------------
+    # Final
+    # -------------------------------------
+    c.showPage()
     c.save()
 
-    return output_path
+    return filename
