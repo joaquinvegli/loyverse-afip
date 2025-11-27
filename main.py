@@ -60,6 +60,8 @@ app.include_router(loyverse_router)
 from loyverse_debug import router as loyverse_debug_router
 app.include_router(loyverse_debug_router)
 
+from facturar_api import router as facturar_router
+app.include_router(facturar_router)
 
 @app.get("/debug/wsdl2")
 def debug_wsdl2():
@@ -245,6 +247,7 @@ def debug_wsaa_client():
         "client_type": str(type(wsaa.client)),
         "methods": dir(wsaa.client) if wsaa.client else None
     }
+
 
 
 
