@@ -99,7 +99,8 @@ def login_cms_directo(cms_b64: str):
 
     url = "https://wsaa.afip.gov.ar/ws/services/LoginCms"
     headers = {
-        "Content-Type": "text/xml; charset=utf-8"
+        "Content-Type": "text/xml; charset=utf-8",
+        "SOAPAction": "",   # 🔥 FIX: AFIP exige este header, aunque esté vacío
     }
 
     r = requests.post(url, data=soap_body.encode("utf-8"), headers=headers, timeout=20)
@@ -198,12 +199,14 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
     key_path = "/etc/secrets/afip_new.key"
     crt_path = "/etc/secrets/afip_new.crt"
 
-    if not os.path.exists(key_path): raise Exception("No existe clave privada AFIP")
-    if not os.path.exists(crt_path): raise Exception("No existe certificado AFIP")
+    if not os.path.exists(key_path):
+        raise Exception("No existe clave privada AFIP")
+    if not os.path.exists(crt_path):
+        raise Exception("No existe certificado AFIP")
 
-    # CUIT y Punto de Venta
     cuit = os.environ.get("AFIP_CUIT")
-    if not cuit: raise Exception("Falta variable AFIP_CUIT")
+    if not cuit:
+        raise Exception("Falta variable AFIP_CUIT")
     cuit_int = int(cuit)
 
     pto_vta = int(os.environ.get("AFIP_PTO_VTA", "1"))
@@ -237,7 +240,7 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
         </ar:Item>
         """
 
-    # SOAP
+    # SOAP FECAESolicitar
     soap_body = f"""<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
     xmlns:ar="http://ar.gov.afip.dif.FEV1/">
@@ -291,7 +294,8 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
     if r.status_code != 200:
         raise Exception(f"WSFE devolvió {r.status_code}: {r.text}")
 
-    tree = ET.fromstring(r.text)
+    from xml.etree import ElementTree as ET2
+    tree = ET2.fromstring(r.text)
 
     cae = None
     vto = None
