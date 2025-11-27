@@ -1,7 +1,5 @@
 # loyverse_api.py
 from datetime import date
-from typing import List
-
 from fastapi import APIRouter, Query
 
 from loyverse import get_receipts_between, normalize_receipt
@@ -20,7 +18,7 @@ async def listar_ventas(
     receipts_raw = await get_receipts_between(desde, hasta)
     ventas = [normalize_receipt(r) for r in receipts_raw]
 
-    # Más adelante vamos a marcar cuál ya fue facturada (consultando tu DB).
+    # Más adelante marcamos si ya fueron facturadas
     for v in ventas:
         v.setdefault("already_invoiced", False)
 
