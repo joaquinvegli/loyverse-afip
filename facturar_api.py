@@ -1,14 +1,11 @@
 # facturar_api.py
-import os
-import base64
-from datetime import datetime
-
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Optional
 
 from afip import wsfe_facturar
-from pdf_afip import generar_pdf_factura_c
+from pdf_afip import generar_pdf_factura
 
 router = APIRouter(prefix="/api", tags=["facturacion"])
 
@@ -37,12 +34,12 @@ class FacturaRequest(BaseModel):
 
 
 # ====================================================
-# ENDPOINT PRINCIPAL — FACTURA C EN MODO SEGURO
+# ENDPOINT PRINCIPAL — FACTURAR + PDF
 # ====================================================
 @router.post("/facturar")
 async def facturar(req: FacturaRequest):
 
-    # -------- MODO SEGURO ------------
+    # MODO SEGURO DURANTE PRUEBAS
     if req.total > 100:
         raise HTTPException(
             status_code=400,
@@ -53,7 +50,7 @@ async def facturar(req: FacturaRequest):
         tipo_comprobante = 11  # FACTURA C
         tipo_doc = 96          # DNI
 
-        # fallback a consumidor final
+        # consumidor final
         doc_nro = 0
         if req.cliente and req.cliente.dni:
             try:
@@ -61,9 +58,7 @@ async def facturar(req: FacturaRequest):
             except:
                 doc_nro = 0
 
-        # ---------------------------
-        # 1) Llamar AFIP (WSFE)
-        # ---------------------------
+        # ================ FACTURAR EN AFIP ===================
         result = wsfe_facturar(
             tipo_cbte=tipo_comprobante,
             doc_tipo=tipo_doc,
@@ -76,72 +71,60 @@ async def facturar(req: FacturaRequest):
             total=req.total,
         )
 
-        cae = result.get("cae")
-        vto = result.get("vencimiento")
-        cbte_nro = result.get("cbte_nro")
+        cbte_nro = result["cbte_nro"]
+        cae = result["cae"]
+        vencimiento = result["vencimiento"]
 
-        # ---------------------------
-        # 2) Generar PDF con QR AFIP
-        # ---------------------------
-        cuit_emisor = os.environ.get("AFIP_CUIT", "")
-        pto_vta = int(os.environ.get("AFIP_PTO_VTA", "1"))
-
-        # Fecha del comprobante en formato AAAAMMDD
-        fecha_cbte = datetime.now().strftime("%Y%m%d")
-
-        # Datos fijos del emisor (tus datos)
-        razon_social = "JOAQUIN VEGLI"
-        domicilio = "ALSINA 155 LOC 15, BAHIA BLANCA, BUENOS AIRES. CP: 8000"
-
-        # Armar items para el PDF (incluyendo importe por línea)
-        items_pdf = []
-        for it in req.items:
-            importe_item = float(it.cantidad) * float(it.precio_unitario)
-            items_pdf.append({
-                "descripcion": it.nombre,
-                "cantidad": it.cantidad,
-                "precio_unitario": it.precio_unitario,
-                "importe": importe_item,
-            })
-
-        datos_pdf = {
-            "razon_social": razon_social,
-            "domicilio": domicilio,
-            "cuit_emisor": cuit_emisor,
-            "pto_vta": pto_vta,
-            "tipo_cbte": tipo_comprobante,
-            "cbte_nro": cbte_nro,
-            "fecha_cbte": fecha_cbte,
-            "cliente_nombre": req.cliente.name or "Consumidor Final",
-            "cliente_doc_tipo": tipo_doc if doc_nro else 99,
-            "cliente_doc_nro": doc_nro,
-            "items": items_pdf,
-            "total": req.total,
-            "cae": cae,
-            "vto_cae": vto,
-        }
-
-        pdf_bytes = generar_pdf_factura_c(datos_pdf)
-        pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
-
-        # ---------------------------
-        # 3) Respuesta al frontend
-        # ---------------------------
-        vto_final = (
-            result.get("vencimiento")
-            or result.get("CAEFchVto")
-            or result.get("vto_cae")
-            or None
+        # ================= GENERAR PDF ======================
+        pdf_path = generar_pdf_factura(
+            cbte_nro=cbte_nro,
+            cae=cae,
+            vto_cae=vencimiento,
+            fecha_cbte=result.get("fecha", ""),
+            cliente_nombre=req.cliente.name or "Consumidor Final",
+            cliente_dni=req.cliente.dni or "",
+            cliente_email=req.cliente.email or "",
+            items=[{
+                "nombre": i.nombre,
+                "cantidad": i.cantidad,
+                "precio_unitario": i.precio_unitario
+            } for i in req.items],
+            total=req.total,
         )
+
+        pdf_url = f"/api/facturas/pdf/{cbte_nro}"
 
         return {
             "status": "ok",
             "receipt_id": req.receipt_id,
             "cae": cae,
-            "vencimiento": vto_final,
+            "vencimiento": vencimiento,
             "cbte_nro": cbte_nro,
-            "pdf_base64": pdf_b64,
+            "pdf_url": pdf_url
         }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ====================================================
+# ENDPOINT — DESCARGAR PDF POR CBTE_NRO
+# ====================================================
+@router.get("/facturas/pdf/{cbte_nro}")
+async def descargar_pdf(cbte_nro: int):
+    """
+    Devuelve el PDF almacenado en /tmp generado previamente.
+    """
+    pdf_path = f"/tmp/FacturaC_{cbte_nro}.pdf"
+
+    if not pdf_path or not pdf_path.endswith(".pdf"):
+        raise HTTPException(status_code=404, detail="Archivo inválido")
+
+    try:
+        return FileResponse(
+            pdf_path,
+            media_type="application/pdf",
+            filename=f"FacturaC_{cbte_nro}.pdf"
+        )
+    except:
+        raise HTTPException(status_code=404, detail="PDF no encontrado")
