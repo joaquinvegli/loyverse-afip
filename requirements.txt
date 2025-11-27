@@ -4,3 +4,6 @@ httpx
 python-multipart
 requests
 git+https://github.com/reingart/pyafipws.git#egg=pyafipws
+reportlab
+qrcode
+Pillow
