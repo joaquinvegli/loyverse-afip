@@ -86,3 +86,27 @@ async def obtener_cliente(customer_id: str):
         "email": c.get("email"),
         "phone": c.get("phone_number"),
     }
+
+# ============================================
+# DEBUG: Ver recibo crudo 1:1 como viene de Loyverse
+# ============================================
+@router.get("/debug/venta/{receipt_id}")
+async def debug_venta(receipt_id: str):
+    """
+    Devuelve la venta RAW exacta antes de normalizar.
+    Sirve para ver cómo Loyverse envía el cliente.
+    """
+    # Pedimos un rango muy grande para que incluya la venta
+    from datetime import date, timedelta
+    
+    desde = date.today() - timedelta(days=365)
+    hasta = date.today() + timedelta(days=1)
+
+    receipts = await get_receipts_between(desde, hasta)
+
+    for r in receipts:
+        if r.get("receipt_number") == receipt_id:
+            return r  # devuelve crudo sin tocar
+
+    return {"error": "No se encontró ese recibo"}
+
