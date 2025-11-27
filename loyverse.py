@@ -19,9 +19,13 @@ async def get_receipts_between(desde, hasta):
     created_at_min = desde.strftime("%Y-%m-%dT00:00:00.000Z")
     created_at_max = hasta.strftime("%Y-%m-%dT23:59:59.999Z")
 
+    # 🔥 FIX: expand=customer para que incluya el customer_id
     url = (
         f"{BASE_URL}/receipts?"
-        f"limit=250&created_at_min={created_at_min}&created_at_max={created_at_max}"
+        f"limit=250"
+        f"&created_at_min={created_at_min}"
+        f"&created_at_max={created_at_max}"
+        f"&expand=customer"
     )
 
     async with httpx.AsyncClient() as client:
@@ -40,40 +44,25 @@ async def get_receipts_between(desde, hasta):
 # NUEVO — OBTENER DATOS DEL CLIENTE
 # ============================================
 async def get_customer(customer_id: str):
-    """
-    Devuelve los datos del cliente desde Loyverse.
-    Si no existe o hay error → devuelve None.
-    """
     headers = {"Authorization": f"Bearer {TOKEN}"}
     url = f"{BASE_URL}/customers/{customer_id}"
 
     async with httpx.AsyncClient() as client:
         r = await client.get(url, headers=headers)
 
-        # Cliente no encontrado
         if r.status_code == 404:
             return None
 
-        # Otro error
         if r.status_code != 200:
             return None
 
-        return r.json()  # Contiene: name, email, phone, etc.
+        return r.json()
 
 
 # ============================================
-# NORMALIZADOR (corregido)
+# NORMALIZADOR
 # ============================================
 def normalize_receipt(r: dict) -> dict:
-    """
-    Convierte una venta de Loyverse al formato que necesita tu web app.
-    """
-
-    # EXTRAER ID REAL DEL CLIENTE (FIX)
-    # Loyverse usa r["customer"]["id"], no "customer_id"
-    customer_obj = r.get("customer") or {}
-    customer_id = customer_obj.get("id")
-
     return {
         "receipt_id": r.get("receipt_number"),
         "receipt_type": r.get("receipt_type"),
@@ -81,10 +70,9 @@ def normalize_receipt(r: dict) -> dict:
         "total": r.get("total_money"),
         "descuento_total": r.get("total_discount", 0),
 
-        # Cliente (FIX aplicado)
-        "cliente_id": customer_id,
+        # 🔥 ACÁ AHORA SÍ FUNCIONA
+        "cliente_id": r.get("customer_id"),
 
-        # Items
         "items": [
             {
                 "nombre": item.get("item_name"),
@@ -95,7 +83,6 @@ def normalize_receipt(r: dict) -> dict:
             for item in r.get("line_items", [])
         ],
 
-        # Método de pago
         "pagos": [
             {
                 "tipo": p.get("type"),
@@ -105,6 +92,5 @@ def normalize_receipt(r: dict) -> dict:
             for p in r.get("payments", [])
         ],
 
-        # Marcador para saber si ya fue facturada
         "already_invoiced": False,
     }
