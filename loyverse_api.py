@@ -15,6 +15,23 @@ router = APIRouter(prefix="/api", tags=["ventas"])
 
 
 # ============================================
+# Función para limpiar el DNI (solo números)
+# ============================================
+def limpiar_dni(valor: str):
+    """
+    Recibe el contenido del campo 'note' de Loyverse
+    y devuelve solo los dígitos (0-9).
+    Si no hay números, devuelve None.
+    """
+    if not valor:
+        return None
+
+    solo_numeros = "".join(c for c in valor if c.isdigit())
+
+    return solo_numeros if solo_numeros else None
+
+
+# ============================================
 # LISTAR VENTAS ENTRE FECHAS
 # ============================================
 @router.get("/ventas")
@@ -22,17 +39,11 @@ async def listar_ventas(
     desde: date = Query(..., description="Fecha desde (YYYY-MM-DD)"),
     hasta: date = Query(..., description="Fecha hasta (YYYY-MM-DD)"),
 ):
-    """
-    Devuelve ventas normalizadas desde Loyverse entre 'desde' y 'hasta'.
-    """
-
     receipts_raw = await get_receipts_between(desde, hasta)
 
-    # Si Loyverse devolvió error -> pasar el error directo
     if isinstance(receipts_raw, dict) and "error" in receipts_raw:
         return JSONResponse(status_code=400, content=receipts_raw)
 
-    # Si vino algo raro
     if not isinstance(receipts_raw, list):
         return JSONResponse(
             status_code=500,
@@ -43,10 +54,8 @@ async def listar_ventas(
             },
         )
 
-    # Normalizar ventas
     ventas = [normalize_receipt(r) for r in receipts_raw]
 
-    # Agregar flag factura
     for v in ventas:
         v.setdefault("already_invoiced", False)
 
@@ -54,18 +63,17 @@ async def listar_ventas(
 
 
 # ============================================
-# NUEVO: OBTENER DATOS DE UN CLIENTE (FIXED)
+# OBTENER DATOS DE UN CLIENTE (con DNI limpio)
 # ============================================
 @router.get("/clientes/{customer_id}")
 async def obtener_cliente(customer_id: str):
     """
     Devuelve datos del cliente desde Loyverse.
-    Si no existe → exists = False.
+    Incluye: name, email, phone, dni (limpio).
     """
 
     data = await get_customer(customer_id)
 
-    # Si no existe
     if data is None:
         return {
             "exists": False,
@@ -73,15 +81,11 @@ async def obtener_cliente(customer_id: str):
             "name": None,
             "email": None,
             "phone": None,
+            "dni": None,
         }
 
-    # En TU cuenta Loyverse, la respuesta es directa:
-    # {
-    #   "id": "...",
-    #   "name": "...",
-    #   "email": "...",
-    #   "phone_number": "..."
-    # }
+    # Limpiar campo DNI (note)
+    dni_limpio = limpiar_dni(data.get("note"))
 
     return {
         "exists": True,
@@ -89,6 +93,7 @@ async def obtener_cliente(customer_id: str):
         "name": data.get("name"),
         "email": data.get("email"),
         "phone": data.get("phone_number"),
+        "dni": dni_limpio,  # DNI limpio y listo para AFIP
     }
 
 
@@ -97,10 +102,6 @@ async def obtener_cliente(customer_id: str):
 # ============================================
 @router.get("/debug/venta/{receipt_id}")
 async def debug_venta(receipt_id: str):
-    """
-    Devuelve la venta RAW exacta antes de normalizar.
-    Sirve para ver cómo Loyverse envía el cliente.
-    """
     from datetime import date, timedelta
 
     desde = date.today() - timedelta(days=365)
