@@ -2,16 +2,14 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
-
-from afip import wsfe_facturar  # ahora sí existe en afip.py
+from afip import wsfe_facturar   # <-- se habilita cuando creemos la función
 
 router = APIRouter(prefix="/api", tags=["facturacion"])
 
 
 # ====================================================
-# Esquema de datos recibidos desde el frontend
+# Esquemas de datos
 # ====================================================
-
 class ClienteData(BaseModel):
     id: Optional[str] = None
     name: Optional[str] = None
@@ -33,32 +31,28 @@ class FacturaRequest(BaseModel):
 
 
 # ====================================================
-# ENDPOINT PRINCIPAL — SIEMPRE FACTURA C
+# ENDPOINT PRINCIPAL — FACTURA C EN MODO SEGURO
 # ====================================================
-
 @router.post("/facturar")
 async def facturar(req: FacturaRequest):
 
-    # -------------------------------------------------------
-    # MODO SEGURO: EVITAR FACTURAS GRANDES EN PRODUCCIÓN
-    # -------------------------------------------------------
+    # -------- MODO SEGURO ------------
     if req.total > 100:
         raise HTTPException(
             status_code=400,
-            detail="El total supera $100. Sistema en modo seguro de prueba. Ajusta el límite en facturar_api.py para facturas reales."
+            detail="El total supera $100. Sistema en modo seguro de prueba."
         )
 
     try:
-        # Siempre FACTURA C (monotributista)
-        tipo_comprobante = 11   # FACTURA C
-        tipo_doc = 96           # DNI
+        tipo_comprobante = 11  # FACTURA C
+        tipo_doc = 96          # DNI
 
-        # Si tiene DNI, lo usamos; si no, consumidor final
+        # fallback a consumidor final
         doc_nro = 0
         if req.cliente and req.cliente.dni:
             try:
                 doc_nro = int(req.cliente.dni)
-            except ValueError:
+            except:
                 doc_nro = 0
 
         # Llamar AFIP
@@ -77,10 +71,9 @@ async def facturar(req: FacturaRequest):
         return {
             "status": "ok",
             "receipt_id": req.receipt_id,
-            "cae": result.get("cae"),
-            "vto_cae": result.get("vencimiento"),
-            "cbte_nro": result.get("cbte_nro"),
-            "pdf_url": None,  # lo agregamos después cuando generemos PDF
+            "cae": result["cae"],
+            "vencimiento": result["vencimiento"],
+            "cbte_nro": result["cbte_nro"],
         }
 
     except Exception as e:
