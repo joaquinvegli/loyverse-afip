@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from loyverse import (
     get_receipts_between,
     normalize_receipt,
-    get_customer,   # ← NUEVO IMPORT
+    get_customer,
 )
 
 router = APIRouter(prefix="/api", tags=["ventas"])
@@ -28,11 +28,11 @@ async def listar_ventas(
 
     receipts_raw = await get_receipts_between(desde, hasta)
 
-    # ← SI VIENE UN ERROR, DEVOLVER DIRECTAMENTE
+    # Si Loyverse devolvió error -> pasar el error directo
     if isinstance(receipts_raw, dict) and "error" in receipts_raw:
         return JSONResponse(status_code=400, content=receipts_raw)
 
-    # ← SI LOYVERSE NO DEVUELVE UNA LISTA, ERROR
+    # Si vino algo raro
     if not isinstance(receipts_raw, list):
         return JSONResponse(
             status_code=500,
@@ -46,7 +46,7 @@ async def listar_ventas(
     # Normalizar ventas
     ventas = [normalize_receipt(r) for r in receipts_raw]
 
-    # Agregar flag de facturado
+    # Agregar flag factura
     for v in ventas:
         v.setdefault("already_invoiced", False)
 
@@ -54,7 +54,7 @@ async def listar_ventas(
 
 
 # ============================================
-# NUEVO: OBTENER DATOS DE UN CLIENTE
+# NUEVO: OBTENER DATOS DE UN CLIENTE (FIXED)
 # ============================================
 @router.get("/clientes/{customer_id}")
 async def obtener_cliente(customer_id: str):
@@ -65,6 +65,7 @@ async def obtener_cliente(customer_id: str):
 
     data = await get_customer(customer_id)
 
+    # Si no existe
     if data is None:
         return {
             "exists": False,
@@ -74,21 +75,25 @@ async def obtener_cliente(customer_id: str):
             "phone": None,
         }
 
-    # El JSON de Loyverse devuelve algo así:
-    # { "customer": { "id": ..., "name": ..., "email": ... } }
-
-    c = data.get("customer", {})
+    # En TU cuenta Loyverse, la respuesta es directa:
+    # {
+    #   "id": "...",
+    #   "name": "...",
+    #   "email": "...",
+    #   "phone_number": "..."
+    # }
 
     return {
         "exists": True,
-        "id": c.get("id", customer_id),
-        "name": c.get("name"),
-        "email": c.get("email"),
-        "phone": c.get("phone_number"),
+        "id": data.get("id"),
+        "name": data.get("name"),
+        "email": data.get("email"),
+        "phone": data.get("phone_number"),
     }
 
+
 # ============================================
-# DEBUG: Ver recibo crudo 1:1 como viene de Loyverse
+# DEBUG: Ver venta cruda
 # ============================================
 @router.get("/debug/venta/{receipt_id}")
 async def debug_venta(receipt_id: str):
@@ -96,9 +101,8 @@ async def debug_venta(receipt_id: str):
     Devuelve la venta RAW exacta antes de normalizar.
     Sirve para ver cómo Loyverse envía el cliente.
     """
-    # Pedimos un rango muy grande para que incluya la venta
     from datetime import date, timedelta
-    
+
     desde = date.today() - timedelta(days=365)
     hasta = date.today() + timedelta(days=1)
 
@@ -106,7 +110,6 @@ async def debug_venta(receipt_id: str):
 
     for r in receipts:
         if r.get("receipt_number") == receipt_id:
-            return r  # devuelve crudo sin tocar
+            return r
 
     return {"error": "No se encontró ese recibo"}
-
