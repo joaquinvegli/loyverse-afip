@@ -11,7 +11,7 @@ if not TOKEN:
 
 
 # ============================================
-# RAW REQUEST ENTRE FECHAS (funciona perfecto)
+# OBTENER RECIBOS ENTRE FECHAS
 # ============================================
 async def get_receipts_between(desde, hasta):
     headers = {"Authorization": f"Bearer {TOKEN}"}
@@ -37,7 +37,32 @@ async def get_receipts_between(desde, hasta):
 
 
 # ============================================
-# NORMALIZADOR (Aquí estaba el problema)
+# NUEVO — OBTENER DATOS DEL CLIENTE
+# ============================================
+async def get_customer(customer_id: str):
+    """
+    Devuelve los datos del cliente desde Loyverse.
+    Si no existe o hay error → devuelve None.
+    """
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    url = f"{BASE_URL}/customers/{customer_id}"
+
+    async with httpx.AsyncClient() as client:
+        r = await client.get(url, headers=headers)
+
+        # Cliente no encontrado
+        if r.status_code == 404:
+            return None
+
+        # Otro error
+        if r.status_code != 200:
+            return None
+
+        return r.json()  # Contiene: name, email, phone, etc.
+
+
+# ============================================
+# NORMALIZADOR (conservar igual)
 # ============================================
 def normalize_receipt(r: dict) -> dict:
     """
@@ -75,6 +100,6 @@ def normalize_receipt(r: dict) -> dict:
             for p in r.get("payments", [])
         ],
 
-        # Marcador para saber si ya está facturada
+        # Marcador para saber si ya fue facturada
         "already_invoiced": False,
     }
