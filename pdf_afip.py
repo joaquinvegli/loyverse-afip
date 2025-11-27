@@ -1,11 +1,12 @@
 import os
-import json
-import qrcode
 from datetime import datetime
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.lib.colors import Color, black
+from io import BytesIO
+import requests
+import qrcode
 
 # -----------------------------
 # PALETA DE COLORES
@@ -13,8 +14,41 @@ from reportlab.lib.colors import Color, black
 COLOR_PRIMARIO = Color(0.027, 0.133, 0.282)   # #072248
 COLOR_SEC1 = Color(0.976, 0.592, 0.0)         # #F89700
 COLOR_SEC2 = Color(0.113, 0.584, 0.760)       # #1D95C2
+COLOR_SEC3 = Color(0.937, 0.078, 0.463)       # #EF1476
+COLOR_SEC4 = Color(0.875, 0.863, 0.0)         # #DFDC00
 
-LOGO_PATH = "static/logo.png"
+# URL del logo RAW de GitHub
+LOGO_URL = "https://raw.githubusercontent.com/joaquinvegli/loyverse-afip/main/static/logo.png"
+
+
+def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto):
+    """
+    Genera un QR AFIP válido según formato oficial.
+    """
+    data = (
+        f"https://www.afip.gob.ar/fe/qr/?"
+        f"p={{"
+        f"\"ver\":1,"
+        f"\"fecha\":\"{datetime.now().strftime('%Y-%m-%d')}\","
+        f"\"cuit\":{cuit},"
+        f"\"ptoVta\":{pto_vta},"
+        f"\"tipoCbte\":11,"
+        f"\"nroCmp\":{cbte_nro},"
+        f"\"importe\":0,"
+        f"\"moneda\":\"PES\","
+        f"\"ctz\":1,"
+        f"\"tipoDocRec\":96,"
+        f"\"nroDocRec\":0,"
+        f"\"tipoCodAut\":\"E\","
+        f"\"codAut\":{cae}"
+        f"}}"
+    )
+
+    qr_img = qrcode.make(data)
+    buffer = BytesIO()
+    qr_img.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
 
 
 def generar_pdf_factura_c(
@@ -32,12 +66,12 @@ def generar_pdf_factura_c(
     total: float,
 ):
     """
-    Genera un PDF de Factura C AFIP con diseño + logo + QR oficial.
+    Genera un PDF de Factura C AFIP con diseño embellecido + logo + QR.
     Devuelve la ruta local al archivo PDF creado.
     """
 
     # -------------------------------------
-    # Carpeta PDFs
+    # Carpeta donde se van a guardar los PDFs
     # -------------------------------------
     folder = "generated_pdfs"
     os.makedirs(folder, exist_ok=True)
@@ -48,58 +82,61 @@ def generar_pdf_factura_c(
     width, height = A4
 
     # -------------------------------------
-    # Header azul
+    # Barra superior azul (header)
     # -------------------------------------
     c.setFillColor(COLOR_PRIMARIO)
     c.rect(0, height - 60, width, 60, fill=True, stroke=False)
 
-    c.setFillColor(Color(1, 1, 1))  # blanco
-    c.setFont("Helvetica-Bold", 20)
-    c.drawString(230, height - 35, "FACTURA C")
+    c.setFillColor("white")
+    c.setFont("Helvetica-Bold", 22)
+    c.drawString(200, height - 40, "FACTURA C")
 
     # -------------------------------------
-    # Logo
+    # Logo desde URL RAW (100% compatible con Render)
     # -------------------------------------
-    if os.path.exists(LOGO_PATH):
-        try:
-            logo = ImageReader(LOGO_PATH)
+    try:
+        resp = requests.get(LOGO_URL, timeout=10)
+        if resp.status_code == 200:
+            logo_bytes = BytesIO(resp.content)
+            logo = ImageReader(logo_bytes)
             c.drawImage(logo, 40, height - 140, width=120, preserveAspectRatio=True, mask='auto')
-        except:
-            pass  # si falla, no rompe el PDF
+    except Exception as e:
+        print("Error cargando logo:", e)
 
     # -------------------------------------
-    # Datos del emisor
+    # DATOS COMERCIO
     # -------------------------------------
     c.setFillColor(black)
-    c.setFont("Helvetica-Bold", 12)
+    c.setFont("Helvetica-Bold", 11)
     c.drawString(40, height - 160, razon_social)
 
     c.setFont("Helvetica", 10)
     c.drawString(40, height - 175, domicilio)
     c.drawString(40, height - 190, f"CUIT: {cuit}")
+
     c.drawString(40, height - 205, f"Punto de Venta: {pto_vta:04d}")
-    c.drawString(180, height - 205, f"Comp. Nº: {cbte_nro:08d}")
-    c.drawString(40, height - 220, f"Fecha: {fecha}")
+    c.drawString(220, height - 205, f"Comprobante Nº: {cbte_nro:08d}")
+
+    c.drawString(40, height - 225, f"Fecha: {fecha}")
 
     # -------------------------------------
-    # Datos del cliente
+    # DATOS CLIENTE
     # -------------------------------------
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(40, height - 250, "Datos del Cliente")
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(40, height - 260, "Datos del Cliente:")
 
     c.setFont("Helvetica", 10)
-    c.drawString(40, height - 265, f"Nombre: {cliente_nombre}")
+    c.drawString(40, height - 275, f"Nombre: {cliente_nombre}")
 
     if cliente_dni:
-        c.drawString(40, height - 280, f"DNI: {cliente_dni}")
+        c.drawString(40, height - 290, f"DNI: {cliente_dni}")
     else:
-        c.drawString(40, height - 280, "DNI: Consumidor Final")
+        c.drawString(40, height - 290, "DNI: Consumidor Final")
 
     # -------------------------------------
-    # Tabla de ítems
+    # TABLA DE ITEMS
     # -------------------------------------
-    y = height - 315
-
+    y = height - 330
     c.setFont("Helvetica-Bold", 11)
     c.drawString(40, y, "Descripción")
     c.drawString(300, y, "Cant.")
@@ -109,17 +146,17 @@ def generar_pdf_factura_c(
     y -= 10
     c.setStrokeColor(COLOR_SEC1)
     c.line(40, y, width - 40, y)
-    y -= 22
+    y -= 20
 
     c.setFont("Helvetica", 10)
 
     for it in items:
-        desc = it["descripcion"][:40]
+        desc = it["descripcion"]
         cant = it["cantidad"]
         precio = it["precio"]
         st = cant * precio
 
-        c.drawString(40, y, desc)
+        c.drawString(40, y, desc[:40])
         c.drawString(300, y, str(cant))
         c.drawString(360, y, f"${precio:.2f}")
         c.drawString(440, y, f"${st:.2f}")
@@ -128,56 +165,31 @@ def generar_pdf_factura_c(
     # -------------------------------------
     # TOTAL
     # -------------------------------------
-    c.setFont("Helvetica-Bold", 14)
+    c.setFont("Helvetica-Bold", 13)
     c.setFillColor(COLOR_SEC2)
     c.drawString(40, y - 10, f"TOTAL: ${total:.2f}")
     c.setFillColor(black)
 
     # -------------------------------------
-    # CAE + vencimiento
+    # CAE
     # -------------------------------------
-    y -= 50
+    y -= 40
     c.setFont("Helvetica", 10)
     c.drawString(40, y, f"CAE: {cae}")
     c.drawString(200, y, f"Vto. CAE: {cae_vto}")
 
     # -------------------------------------
-    # QR OFICIAL AFIP
+    # QR AFIP (abajo a la derecha)
     # -------------------------------------
-    qr_data = {
-        "ver": 1,
-        "fecha": datetime.now().strftime("%Y-%m-%d"),
-        "cuit": int(cuit),
-        "ptoVta": pto_vta,
-        "tipoCmp": 11,
-        "nroCmp": cbte_nro,
-        "importe": float(total),
-        "moneda": "PES",
-        "ctz": 1,
-        "tipoDocRec": 96,
-        "nroDocRec": int(cliente_dni) if cliente_dni else 0,
-        "tipoCodAut": "E",
-        "codAut": int(cae)
-    }
-
-    json_qr = json.dumps(qr_data).encode("utf-8")
-    url_afip = "https://www.afip.gob.ar/fe/qr/?p=" + json_qr.decode("latin1")
-
-    qr_img = qrcode.make(url_afip)
-
-    qr_path = f"{folder}/qr_{pto_vta}_{cbte_nro}.png"
-    qr_img.save(qr_path)
-
-    # Insertar QR abajo a la derecha (formato oficial)
-    if os.path.exists(qr_path):
-        qr = ImageReader(qr_path)
-        c.drawImage(qr, width - 160, 40, width=120, height=120)
-
-    c.setFont("Helvetica", 8)
-    c.drawString(width - 160, 30, "Consultar validez en afip.gob.ar/fe")
+    try:
+        qr_buffer = generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto)
+        qr_img = ImageReader(qr_buffer)
+        c.drawImage(qr_img, width - 160, 40, width=120, height=120)
+    except Exception as e:
+        print("Error generando QR:", e)
 
     # -------------------------------------
-    # Finalizar
+    # Final
     # -------------------------------------
     c.showPage()
     c.save()
