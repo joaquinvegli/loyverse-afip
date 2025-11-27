@@ -2,8 +2,6 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from afip import test_afip_connection
-
 # Routers externos
 from debug import router as debug_router
 from loyverse_api import router as loyverse_router
@@ -26,25 +24,12 @@ app.add_middleware(
 )
 
 
-
 # ============================================================
 # ROOT
 # ============================================================
 @app.get("/")
 def root():
     return {"status": "ok", "message": "API funcionando"}
-
-
-# ============================================================
-# TEST AFIP
-# ============================================================
-@app.get("/test/afip")
-def test_afip():
-    try:
-        result = test_afip_connection()
-        return {"status": "ok", "data": result}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 # ============================================================
@@ -255,4 +240,3 @@ def debug_wsaa_client():
         "client_type": str(type(wsaa.client)),
         "methods": dir(wsaa.client) if wsaa.client else None,
     }
-
