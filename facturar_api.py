@@ -68,12 +68,22 @@ async def facturar(req: FacturaRequest):
             total=req.total,
         )
 
+        # ================================
+        # FIX: asegurar vencimiento correcto
+        # ================================
+        vto = (
+            result.get("vencimiento")
+            or result.get("CAEFchVto")
+            or result.get("vto_cae")
+            or None
+        )
+
         return {
             "status": "ok",
             "receipt_id": req.receipt_id,
-            "cae": result["cae"],
-            "vencimiento": result["vencimiento"],
-            "cbte_nro": result["cbte_nro"],
+            "cae": result.get("cae"),
+            "vencimiento": vto,
+            "cbte_nro": result.get("cbte_nro"),
         }
 
     except Exception as e:
