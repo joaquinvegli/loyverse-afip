@@ -189,10 +189,11 @@ def wsfe_ultimo_comprobante(token: str, sign: str, cuit: int, pto_vta: int, tipo
 
     r = session.post(wsfe_url, data=soap_body.encode("utf-8"), headers=headers, timeout=20)
 
+    from xml.etree import ElementTree as ET2
     if r.status_code != 200:
         raise Exception(f"WSFE devolvió {r.status_code}: {r.text}")
 
-    tree = ET.fromstring(r.text)
+    tree = ET2.fromstring(r.text)
 
     cbte_nro = None
     for elem in tree.iter():
@@ -226,10 +227,179 @@ def wsfe_ultimo_comprobante(token: str, sign: str, cuit: int, pto_vta: int, tipo
 
 
 # ======================================================
+# 3b) WSFE – FECAESolicitar (FACTURAR) DIRECTO CON SOAP
+# ======================================================
+def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, total: float):
+    """
+    Genera una factura (por ahora Factura C) usando WSFE → FECAESolicitar.
+    - Usa WSAA (generar_cms_der_b64 + login_cms_directo)
+    - Usa wsfe_ultimo_comprobante para calcular el próximo número
+    - Devuelve: cae, vencimiento, cbte_nro
+    """
+
+    from xml.etree import ElementTree as ET
+
+    # ---------------------------
+    # Paths certificados
+    # ---------------------------
+    key_path = "/etc/secrets/afip_new.key"
+    crt_path = "/etc/secrets/afip_new.crt"
+
+    if not os.path.exists(key_path):
+        raise Exception(f"No existe {key_path}")
+    if not os.path.exists(crt_path):
+        raise Exception(f"No existe {crt_path}")
+
+    # ---------------------------
+    # WSAA → Token / Sign
+    # ---------------------------
+    cms_b64 = generar_cms_der_b64(crt_path, key_path)
+    token, sign = login_cms_directo(cms_b64)
+
+    # ---------------------------
+    # Datos básicos desde ENV
+    # ---------------------------
+    cuit = os.environ.get("AFIP_CUIT")
+    if not cuit:
+        raise Exception("Falta variable AFIP_CUIT")
+
+    try:
+        cuit_int = int(cuit)
+    except:
+        raise Exception(f"AFIP_CUIT inválido: {cuit}")
+
+    pto_vta = int(os.environ.get("AFIP_PTO_VTA", "1"))
+    wsfe_url = os.environ.get("AFIP_WSFE_URL", "https://servicios1.afip.gov.ar/wsfev1/service.asmx")
+
+    # ---------------------------
+    # Obtener próximo número de comprobante
+    # ---------------------------
+    ultimo = wsfe_ultimo_comprobante(token, sign, cuit_int, pto_vta, tipo_cbte)
+    cbte_nro = ultimo + 1
+
+    # ---------------------------
+    # Fechas e importes
+    # ---------------------------
+    today = datetime.now().strftime("%Y%m%d")  # AAAAMMDD
+
+    imp_total = float(total)
+    imp_tot_conc = 0.0
+    imp_neto = float(total)    # En Factura C sin IVA, el total = neto
+    imp_trib = 0.0
+    imp_op_ex = 0.0
+    imp_iva = 0.0
+
+    # Concepto 1 = Productos
+    concepto = 1
+
+    # Si no hay doc_nro, usar 0 y doc_tipo 99 (Consumidor Final)
+    if not doc_nro:
+        doc_tipo = 99
+        doc_nro = 0
+
+    # ---------------------------
+    # SOAP FECAESolicitar
+    # ---------------------------
+    # Armamos una sola línea de detalle, usando el total.
+    soap_body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ar="http://ar.gov.afip.dif.FEV1/">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <ar:FECAESolicitar>
+      <ar:Auth>
+        <ar:Token>{token}</ar:Token>
+        <ar:Sign>{sign}</ar:Sign>
+        <ar:Cuit>{cuit_int}</ar:Cuit>
+      </ar:Auth>
+      <ar:FeCAEReq>
+        <ar:FeCabReq>
+          <ar:CantReg>1</ar:CantReg>
+          <ar:PtoVta>{pto_vta}</ar:PtoVta>
+          <ar:CbteTipo>{tipo_cbte}</ar:CbteTipo>
+        </ar:FeCabReq>
+        <ar:FeDetReq>
+          <ar:FECAEDetRequest>
+            <ar:Concepto>{concepto}</ar:Concepto>
+            <ar:DocTipo>{doc_tipo}</ar:DocTipo>
+            <ar:DocNro>{doc_nro}</ar:DocNro>
+            <ar:CbteDesde>{cbte_nro}</ar:CbteDesde>
+            <ar:CbteHasta>{cbte_nro}</ar:CbteHasta>
+            <ar:CbteFch>{today}</ar:CbteFch>
+            <ar:ImpTotal>{imp_total:.2f}</ar:ImpTotal>
+            <ar:ImpTotConc>{imp_tot_conc:.2f}</ar:ImpTotConc>
+            <ar:ImpNeto>{imp_neto:.2f}</ar:ImpNeto>
+            <ar:ImpOpEx>{imp_op_ex:.2f}</ar:ImpOpEx>
+            <ar:ImpIVA>{imp_iva:.2f}</ar:ImpIVA>
+            <ar:ImpTrib>{imp_trib:.2f}</ar:ImpTrib>
+            <ar:MonId>PES</ar:MonId>
+            <ar:MonCotiz>1.00</ar:MonCotiz>
+          </ar:FECAEDetRequest>
+        </ar:FeDetReq>
+      </ar:FeCAEReq>
+    </ar:FECAESolicitar>
+  </soapenv:Body>
+</soapenv:Envelope>
+"""
+
+    headers = {
+        "Content-Type": "text/xml; charset=utf-8",
+        "SOAPAction": "http://ar.gov.afip.dif.FEV1/FECAESolicitar",
+    }
+
+    session = requests.Session()
+    session.mount("https://", TLSAdapter())
+
+    r = session.post(wsfe_url, data=soap_body.encode("utf-8"), headers=headers, timeout=20)
+
+    if r.status_code != 200:
+        raise Exception(f"WSFE FECAESolicitar devolvió {r.status_code}: {r.text}")
+
+    tree = ET.fromstring(r.text)
+
+    # ---------------------------
+    # Buscar CAE y fecha de vencimiento
+    # ---------------------------
+    cae = None
+    fch_vto = None
+    for elem in tree.iter():
+        if elem.tag.endswith("CAE"):
+            cae = elem.text
+        if elem.tag.endswith("CAEFchVto"):
+            fch_vto = elem.text
+
+    if not cae:
+        # Intentar leer errores si no hay CAE
+        errores = []
+        for elem in tree.iter():
+            if elem.tag.endswith("Err"):
+                code = None
+                msg = None
+                for child in elem:
+                    if child.tag.endswith("Code"):
+                        code = child.text
+                    if child.tag.endswith("Msg"):
+                        msg = child.text
+                if code or msg:
+                    errores.append(f"{code}: {msg}")
+        if errores:
+            raise Exception("WSFE FECAESolicitar errores: " + " | ".join(errores))
+        else:
+            raise Exception("No se obtuvo CAE en la respuesta de FECAESolicitar")
+
+    return {
+        "cae": cae,
+        "vencimiento": fch_vto,
+        "cbte_nro": cbte_nro,
+        "tipo_cbte": tipo_cbte,
+        "pto_vta": pto_vta,
+    }
+
+
+# ======================================================
 # 4) PUNTO DE ENTRADA /test/afip
 # ======================================================
 def test_afip_connection():
-    """ Conexión completa a AFIP: WSAA + WSFE """
+    """ Conexión completa a AFIP: WSAA + WSFE (último comprobante). """
 
     key_path = "/etc/secrets/afip_new.key"
     crt_path = "/etc/secrets/afip_new.crt"
