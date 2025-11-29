@@ -5,7 +5,6 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.lib.colors import Color, black
 from io import BytesIO
-import requests
 import qrcode
 
 # -----------------------------
@@ -16,28 +15,6 @@ COLOR_SEC1 = Color(0.976, 0.592, 0.0)         # #F89700
 COLOR_SEC2 = Color(0.113, 0.584, 0.760)       # #1D95C2
 COLOR_SEC3 = Color(0.937, 0.078, 0.463)       # #EF1476
 COLOR_SEC4 = Color(0.875, 0.863, 0.0)         # #DFDC00
-
-# URL RAW del logo
-LOGO_URL = "https://raw.githubusercontent.com/joaquinvegli/loyverse-afip/main/static/logo.jpg"
-
-
-def cargar_logo_en_memoria():
-    """
-    Descarga el logo desde GitHub y lo deja en un BytesIO para evitar
-    problemas de filesystem en Render y problemas de decodificación PNG.
-    """
-    try:
-        resp = requests.get(LOGO_URL, timeout=10)
-        if resp.status_code == 200:
-            bio = BytesIO(resp.content)
-            bio.seek(0)
-            return ImageReader(bio)
-        else:
-            print("Error descargando logo:", resp.status_code)
-    except Exception as e:
-        print("Excepción descargando logo:", e)
-
-    return None
 
 
 def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto):
@@ -85,7 +62,9 @@ def generar_pdf_factura_c(
     total: float,
 ):
     """
-    Genera el PDF de factura C con logo + QR.
+    Genera el PDF de factura C con LOGO LOCAL + QR.
+    El logo se carga **directamente desde el filesystem**, que es
+    el único método 100% confiable en Render + ReportLab.
     """
 
     folder = "generated_pdfs"
@@ -107,16 +86,19 @@ def generar_pdf_factura_c(
     c.drawString(200, height - 40, "FACTURA C")
 
     # -------------------------------------
-    # LOGO DESDE MEMORIA (INFALIBLE)
+    # LOGO DESDE ARCHIVO LOCAL
     # -------------------------------------
-    logo_img = cargar_logo_en_memoria()
-    if logo_img:
+    logo_path = "static/logo.jpg"  # <--- EL ARCHIVO DEBE EXISTIR EN EL REPO
+
+    if os.path.exists(logo_path):
         try:
-            c.drawImage(logo_img, 40, height - 140, width=100, preserveAspectRatio=True, mask='auto')
+            img = ImageReader(logo_path)
+            c.drawImage(img, 40, height - 140, width=100,
+                        preserveAspectRatio=True, mask='auto')
         except Exception as e:
             print("Error dibujando logo:", e)
     else:
-        print("Logo no disponible, no se dibuja.")
+        print("El archivo LOCAL no existe:", logo_path)
 
     # -------------------------------------
     # Datos del comercio
