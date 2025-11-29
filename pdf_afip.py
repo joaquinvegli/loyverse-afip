@@ -163,7 +163,7 @@ def generar_pdf_factura_c(
     box_w = 210
     box_h = 75
     box_x = width - left - box_w
-    box_y = top_y - 5  # ← antes -25 (subido 20 px)
+    box_y = top_y  # ← antes -25 (subido 20 px)
 
     c.rect(box_x, box_y - box_h, box_w, box_h, stroke=1, fill=0)
 
