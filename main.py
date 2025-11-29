@@ -362,4 +362,12 @@ def debug_test_logo():
     except Exception as e:
         return {"ok": False, "fatal": str(e)}
 
+    @app.get("/debug/pdf-afip-path")
+def debug_pdf_afip_path():
+    import pdf_afip
+    return {
+        "real_file": getattr(pdf_afip, "__file__", "UNKNOWN"),
+        "cwd": os.getcwd()
+    }
+
 
