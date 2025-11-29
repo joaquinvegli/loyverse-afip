@@ -10,17 +10,14 @@ import qrcode
 # -----------------------------
 # PALETA DE COLORES
 # -----------------------------
-COLOR_PRIMARIO = Color(0.027, 0.133, 0.282)   # #072248
-COLOR_SEC1 = Color(0.976, 0.592, 0.0)         # #F89700
-COLOR_SEC2 = Color(0.113, 0.584, 0.760)       # #1D95C2
-COLOR_SEC3 = Color(0.937, 0.078, 0.463)       # #EF1476
-COLOR_SEC4 = Color(0.875, 0.863, 0.0)         # #DFDC00
+COLOR_PRIMARIO = Color(0.027, 0.133, 0.282)
+COLOR_SEC1 = Color(0.976, 0.592, 0.0)
+COLOR_SEC2 = Color(0.113, 0.584, 0.760)
+COLOR_SEC3 = Color(0.937, 0.078, 0.463)
+COLOR_SEC4 = Color(0.875, 0.863, 0.0)
 
 
 def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto):
-    """
-    Genera un QR AFIP válido.
-    """
     data = (
         f"https://www.afip.gob.ar/fe/qr/?"
         f"p={{"
@@ -39,7 +36,6 @@ def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto):
         f"\"codAut\":{cae}"
         f"}}"
     )
-
     qr_img = qrcode.make(data)
     buffer = BytesIO()
     qr_img.save(buffer, format="PNG")
@@ -61,12 +57,6 @@ def generar_pdf_factura_c(
     items: list,
     total: float,
 ):
-    """
-    Genera el PDF de factura C con LOGO LOCAL + QR.
-    El logo se carga **directamente desde el filesystem**, que es
-    el único método 100% confiable en Render + ReportLab.
-    """
-
     folder = "generated_pdfs"
     os.makedirs(folder, exist_ok=True)
 
@@ -75,34 +65,26 @@ def generar_pdf_factura_c(
     c = canvas.Canvas(filename, pagesize=A4)
     width, height = A4
 
-    # -------------------------------------
-    # Header azul
-    # -------------------------------------
+    # HEADER
     c.setFillColor(COLOR_PRIMARIO)
     c.rect(0, height - 60, width, 60, fill=True, stroke=False)
-
     c.setFillColor("white")
     c.setFont("Helvetica-Bold", 22)
     c.drawString(200, height - 40, "FACTURA C")
 
-    # -------------------------------------
-    # LOGO DESDE ARCHIVO LOCAL
-    # -------------------------------------
-    logo_path = "static/logo.jpg"  # <--- EL ARCHIVO DEBE EXISTIR EN EL REPO
-
+    # LOGO LOCAL (sin mask)
+    logo_path = "static/logo.jpg"
     if os.path.exists(logo_path):
         try:
             img = ImageReader(logo_path)
             c.drawImage(img, 40, height - 140, width=100,
-                        preserveAspectRatio=True, mask='auto')
+                        preserveAspectRatio=True)  # ← SIN mask
         except Exception as e:
             print("Error dibujando logo:", e)
     else:
         print("El archivo LOCAL no existe:", logo_path)
 
-    # -------------------------------------
-    # Datos del comercio
-    # -------------------------------------
+    # DATOS COMERCIO
     c.setFillColor(black)
     c.setFont("Helvetica-Bold", 11)
     c.drawString(40, height - 165, razon_social)
@@ -113,12 +95,9 @@ def generar_pdf_factura_c(
 
     c.drawString(40, height - 210, f"Punto de Venta: {pto_vta:04d}")
     c.drawString(220, height - 210, f"Comprobante Nº: {cbte_nro:08d}")
-
     c.drawString(40, height - 225, f"Fecha: {fecha}")
 
-    # -------------------------------------
-    # Datos del cliente
-    # -------------------------------------
+    # CLIENTE
     c.setFont("Helvetica-Bold", 11)
     c.drawString(40, height - 260, "Datos del Cliente")
 
@@ -130,11 +109,8 @@ def generar_pdf_factura_c(
     else:
         c.drawString(40, height - 290, "DNI: Consumidor Final")
 
-    # -------------------------------------
-    # Items
-    # -------------------------------------
+    # ITEMS
     y = height - 330
-
     c.setFont("Helvetica-Bold", 11)
     c.drawString(40, y, "Descripción")
     c.drawString(300, y, "Cant.")
@@ -160,25 +136,19 @@ def generar_pdf_factura_c(
         c.drawString(440, y, f"${st:.2f}")
         y -= 18
 
-    # -------------------------------------
-    # Total
-    # -------------------------------------
+    # TOTAL
     c.setFont("Helvetica-Bold", 13)
     c.setFillColor(COLOR_SEC2)
     c.drawString(40, y - 10, f"TOTAL: ${total:.2f}")
     c.setFillColor(black)
 
-    # -------------------------------------
     # CAE
-    # -------------------------------------
     y -= 40
     c.setFont("Helvetica", 10)
     c.drawString(40, y, f"CAE: {cae}")
     c.drawString(200, y, f"Vto. CAE: {cae_vto}")
 
-    # -------------------------------------
-    # QR AFIP
-    # -------------------------------------
+    # QR
     try:
         qr_buf = generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto)
         qr_img = ImageReader(qr_buf)
@@ -186,9 +156,6 @@ def generar_pdf_factura_c(
     except Exception as e:
         print("Error generando QR:", e)
 
-    # -------------------------------------
-    # Final
-    # -------------------------------------
     c.showPage()
     c.save()
 
