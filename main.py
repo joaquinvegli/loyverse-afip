@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+import os
 
 # Routers externos
 from debug import router as debug_router
@@ -239,4 +240,37 @@ def debug_wsaa_client():
         "client_loaded": wsaa.client is not None,
         "client_type": str(type(wsaa.client)),
         "methods": dir(wsaa.client) if wsaa.client else None,
+    }
+
+
+# ============================================================
+# NUEVOS ENDPOINTS PARA DEBUG DEL FILESYSTEM
+# ============================================================
+
+@app.get("/debug/list-root")
+def list_root():
+    return {
+        "cwd": os.getcwd(),
+        "root_files": os.listdir(".")
+    }
+
+
+@app.get("/debug/list-static")
+def list_static():
+    if os.path.exists("static"):
+        return {
+            "exists": True,
+            "files": os.listdir("static")
+        }
+    else:
+        return {"exists": False}
+
+
+@app.get("/debug/check-logo")
+def check_logo():
+    path = "static/logo.jpg"
+    return {
+        "exists": os.path.exists(path),
+        "absolute_path": os.path.abspath(path),
+        "cwd": os.getcwd()
     }
