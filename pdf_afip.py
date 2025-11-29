@@ -17,36 +17,27 @@ COLOR_SEC2 = Color(0.113, 0.584, 0.760)       # #1D95C2
 COLOR_SEC3 = Color(0.937, 0.078, 0.463)       # #EF1476
 COLOR_SEC4 = Color(0.875, 0.863, 0.0)         # #DFDC00
 
-# URL RAW del logo (funciona en GitHub)
+# URL RAW del logo
 LOGO_URL = "https://raw.githubusercontent.com/joaquinvegli/loyverse-afip/main/static/logo.png"
-LOGO_LOCAL = "static/logo.png"
 
 
-def asegurar_logo_local():
+def cargar_logo_en_memoria():
     """
-    Descarga el logo desde GitHub SOLO si no existe en Render.
+    Descarga el logo desde GitHub y lo deja en un BytesIO para evitar
+    problemas de filesystem en Render y problemas de decodificación PNG.
     """
-    if os.path.exists(LOGO_LOCAL):
-        return LOGO_LOCAL
-
     try:
-        print("Descargando logo desde GitHub...")
-        os.makedirs("static", exist_ok=True)
         resp = requests.get(LOGO_URL, timeout=10)
-
         if resp.status_code == 200:
-            with open(LOGO_LOCAL, "wb") as f:
-                f.write(resp.content)
-            print("Logo guardado en", LOGO_LOCAL)
-            return LOGO_LOCAL
+            bio = BytesIO(resp.content)
+            bio.seek(0)
+            return ImageReader(bio)
         else:
             print("Error descargando logo:", resp.status_code)
-
     except Exception as e:
-        print("Excepción al descargar logo:", e)
+        print("Excepción descargando logo:", e)
 
     return None
-
 
 
 def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto):
@@ -79,7 +70,6 @@ def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto):
     return buffer
 
 
-
 def generar_pdf_factura_c(
     razon_social: str,
     domicilio: str,
@@ -98,7 +88,6 @@ def generar_pdf_factura_c(
     Genera el PDF de factura C con logo + QR.
     """
 
-    # Asegurar carpeta
     folder = "generated_pdfs"
     os.makedirs(folder, exist_ok=True)
 
@@ -118,15 +107,16 @@ def generar_pdf_factura_c(
     c.drawString(200, height - 40, "FACTURA C")
 
     # -------------------------------------
-    # LOGO DESDE ARCHIVO LOCAL
+    # LOGO DESDE MEMORIA (INFALIBLE)
     # -------------------------------------
-    logo_final = asegurar_logo_local()
-    if logo_final and os.path.exists(logo_final):
+    logo_img = cargar_logo_en_memoria()
+    if logo_img:
         try:
-            img = ImageReader(logo_final)
-            c.drawImage(img, 40, height - 150, width=120, preserveAspectRatio=True, mask='auto')
+            c.drawImage(logo_img, 40, height - 140, width=100, preserveAspectRatio=True, mask='auto')
         except Exception as e:
-            print("Error cargando logo local:", e)
+            print("Error dibujando logo:", e)
+    else:
+        print("Logo no disponible, no se dibuja.")
 
     # -------------------------------------
     # Datos del comercio
