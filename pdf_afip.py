@@ -37,10 +37,10 @@ def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto):
         f"}}"
     )
     qr_img = qrcode.make(data)
-    buffer = BytesIO()
-    qr_img.save(buffer, format="PNG")
-    buffer.seek(0)
-    return buffer
+    buf = BytesIO()
+    qr_img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
 
 def generar_pdf_factura_c(
@@ -72,45 +72,45 @@ def generar_pdf_factura_c(
     c.setFont("Helvetica-Bold", 22)
     c.drawString(200, height - 40, "FACTURA C")
 
-    # LOGO LOCAL (sin mask)
-    logo_path = "static/logo.jpg"
+    # LOGO LOCAL — ARCHIVO FIXED
+    logo_path = "static/logo_fixed.png"
     if os.path.exists(logo_path):
         try:
             img = ImageReader(logo_path)
-            c.drawImage(img, 40, height - 140, width=100,
-                        preserveAspectRatio=True)  # ← SIN mask
+            c.drawImage(img, 40, height - 150, width=120, preserveAspectRatio=True)
         except Exception as e:
             print("Error dibujando logo:", e)
     else:
-        print("El archivo LOCAL no existe:", logo_path)
+        print("Logo no encontrado en:", logo_path)
 
-    # DATOS COMERCIO
+    # DATOS DEL COMERCIO
     c.setFillColor(black)
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(40, height - 165, razon_social)
+    c.drawString(40, height - 170, razon_social)
 
     c.setFont("Helvetica", 10)
-    c.drawString(40, height - 180, domicilio)
-    c.drawString(40, height - 195, f"CUIT: {cuit}")
+    c.drawString(40, height - 185, domicilio)
+    c.drawString(40, height - 200, f"CUIT: {cuit}")
 
-    c.drawString(40, height - 210, f"Punto de Venta: {pto_vta:04d}")
-    c.drawString(220, height - 210, f"Comprobante Nº: {cbte_nro:08d}")
-    c.drawString(40, height - 225, f"Fecha: {fecha}")
+    c.drawString(40, height - 215, f"Punto de Venta: {pto_vta:04d}")
+    c.drawString(220, height - 215, f"Comprobante Nº: {cbte_nro:08d}")
+    c.drawString(40, height - 230, f"Fecha: {fecha}")
 
     # CLIENTE
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(40, height - 260, "Datos del Cliente")
+    c.drawString(40, height - 265, "Datos del Cliente")
 
     c.setFont("Helvetica", 10)
-    c.drawString(40, height - 275, f"Nombre: {cliente_nombre}")
+    c.drawString(40, height - 280, f"Nombre: {cliente_nombre}")
 
     if cliente_dni:
-        c.drawString(40, height - 290, f"DNI: {cliente_dni}")
+        c.drawString(40, height - 295, f"DNI: {cliente_dni}")
     else:
-        c.drawString(40, height - 290, "DNI: Consumidor Final")
+        c.drawString(40, height - 295, "DNI: Consumidor Final")
 
     # ITEMS
-    y = height - 330
+    y = height - 335
+
     c.setFont("Helvetica-Bold", 11)
     c.drawString(40, y, "Descripción")
     c.drawString(300, y, "Cant.")
@@ -123,17 +123,17 @@ def generar_pdf_factura_c(
     y -= 20
 
     c.setFont("Helvetica", 10)
-
     for it in items:
         desc = it["descripcion"]
         cant = it["cantidad"]
         precio = it["precio"]
-        st = cant * precio
+        subtotal = cant * precio
 
         c.drawString(40, y, desc[:40])
         c.drawString(300, y, str(cant))
         c.drawString(360, y, f"${precio:.2f}")
-        c.drawString(440, y, f"${st:.2f}")
+        c.drawString(440, y, f"${subtotal:.2f}")
+
         y -= 18
 
     # TOTAL
