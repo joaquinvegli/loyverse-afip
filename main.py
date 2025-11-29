@@ -274,3 +274,29 @@ def check_logo():
         "absolute_path": os.path.abspath(path),
         "cwd": os.getcwd()
     }
+
+@app.get("/debug/static-full")
+def debug_static_full():
+    import os
+
+    folder = "static"
+    if not os.path.exists(folder):
+        return {"exists": False, "error": "Carpeta static NO existe en este entorno."}
+
+    archivos = []
+    for filename in os.listdir(folder):
+        path = os.path.join(folder, filename)
+        info = {
+            "name": filename,
+            "is_file": os.path.isfile(path),
+            "size_bytes": os.path.getsize(path),
+            "absolute_path": os.path.abspath(path)
+        }
+        archivos.append(info)
+
+    return {
+        "exists": True,
+        "cwd": os.getcwd(),
+        "static_path": os.path.abspath(folder),
+        "files": archivos,
+    }
