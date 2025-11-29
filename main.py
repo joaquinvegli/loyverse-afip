@@ -3,6 +3,13 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
 
+# ======= FORZAR RELOAD DE pdf_afip.py =========
+import importlib
+import pdf_afip
+importlib.reload(pdf_afip)
+# ==============================================
+
+
 # Routers externos
 from debug import router as debug_router
 from loyverse_api import router as loyverse_router
@@ -334,4 +341,5 @@ def clear_pycache():
                 shutil.rmtree(full)
                 removed.append(full)
     return {"removed": removed}
+
 
