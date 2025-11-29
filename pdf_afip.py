@@ -77,7 +77,16 @@ def generar_pdf_factura_c(
     if os.path.exists(logo_path):
         try:
             img = ImageReader(logo_path)
-            c.drawImage(img, 40, height - 150, width=120, preserveAspectRatio=True)
+            # ←← FIX: bajar logo + height explícito + mask
+            c.drawImage(
+                img,
+                40,
+                height - 200,   # ANTES: height - 150 (tapado por header)
+                width=120,
+                height=120,
+                preserveAspectRatio=True,
+                mask='auto'
+            )
         except Exception as e:
             print("Error dibujando logo:", e)
     else:
