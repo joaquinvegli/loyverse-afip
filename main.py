@@ -311,3 +311,15 @@ def debug_show_pdf_code():
             return {"content": f.read()}
     except Exception as e:
         return {"error": str(e)}
+@app.get("/debug/where-pdf")
+def where_pdf():
+    import os
+    return {
+        "working_dir": os.getcwd(),
+        "exists_in_cwd": os.path.exists("pdf_afip.py"),
+        "exists_in_src": os.path.exists("/opt/render/project/src/pdf_afip.py"),
+        "exists_in_root": os.path.exists("/pdf_afip.py"),
+        "files_in_cwd": os.listdir("."),
+        "files_in_src": os.listdir("/opt/render/project/src")
+    }
+
