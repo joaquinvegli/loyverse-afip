@@ -41,6 +41,26 @@ def _formatear_fecha_cae_vto(cae_vto: str) -> str:
     return s
 
 
+def _wrap_text(text, max_chars=45):
+    """
+    Corta texto en líneas de largo fijo sin romper palabras.
+    """
+    palabras = text.split(" ")
+    lineas = []
+    actual = ""
+
+    for p in palabras:
+        if len(actual) + len(p) + 1 <= max_chars:
+            actual += (" " if actual else "") + p
+        else:
+            lineas.append(actual)
+            actual = p
+    if actual:
+        lineas.append(actual)
+
+    return lineas
+
+
 def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto):
     data = (
         f"https://www.afip.gob.ar/fe/qr/?"
@@ -89,7 +109,7 @@ def generar_pdf_factura_c(
     width, height = A4
 
     # -----------------------------
-    # HEADER (barra azul)
+    # HEADER
     # -----------------------------
     header_h = 70
     c.setFillColor(COLOR_PRIMARIO)
@@ -116,8 +136,6 @@ def generar_pdf_factura_c(
             c.drawImage(img, left, logo_y, width=logo_w, height=logo_h, preserveAspectRatio=True, mask="auto")
         except Exception as e:
             print("Error dibujando logo:", e)
-    else:
-        print("Logo no encontrado:", LOGO_PATH)
 
     # Datos comercio
     tx = left + logo_w + 10
@@ -125,25 +143,27 @@ def generar_pdf_factura_c(
 
     c.setFillColor(black)
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(tx, y, razon_social.upper()); y -= 14
+    c.drawString(tx, y, razon_social.upper())
+    y -= 14
 
     c.setFont("Helvetica", 10)
-    c.drawString(tx, y, domicilio); y -= 12
+    for linea in _wrap_text(domicilio):
+        c.drawString(tx, y, linea)
+        y -= 12
 
     cuit_disp = _formatear_cuit_display(cuit)
     c.drawString(tx, y, f"CUIT: {cuit_disp}"); y -= 12
-
     c.drawString(tx, y, f"Condición frente al IVA: {COND_IVA}"); y -= 12
     c.drawString(tx, y, f"Ingresos Brutos: {INGRESOS_BRUTOS}"); y -= 12
     c.drawString(tx, y, f"Inicio de actividades: {INICIO_ACT}")
 
     # -----------------------------
-    # BLOQUE COMPROBANTE (BAJADO 20px)
+    # CUADRO COMPROBANTE (SUBIDO UN POCO)
     # -----------------------------
     box_w = 210
     box_h = 75
     box_x = width - left - box_w
-    box_y = top_y - 25   # ← antes -5 (bajado 20 px)
+    box_y = top_y - 10  # ← antes -25 (subido 15 px)
 
     c.rect(box_x, box_y - box_h, box_w, box_h, stroke=1, fill=0)
 
@@ -182,7 +202,6 @@ def generar_pdf_factura_c(
     # ÍTEMS
     # -----------------------------
     y_items_start = y - 35
-
     c.setFont("Helvetica-Bold", 11)
     c.drawString(left, y_items_start, "Descripción")
     c.drawString(300, y_items_start, "Cant.")
@@ -218,14 +237,14 @@ def generar_pdf_factura_c(
     c.setFillColor(black)
 
     # -----------------------------
-    # CAE + QR (estilo AFIP)
+    # CAE + QR
     # -----------------------------
     cae_txt = f"CAE Nº: {cae}"
     vto_txt = f"Vencimiento CAE: {_formatear_fecha_cae_vto(cae_vto)}"
 
     qr_size = 110
     qr_x = width - left - qr_size
-    qr_y = 80   # ← subido un poco por el pie de página
+    qr_y = 80
 
     c.setFont("Helvetica-Bold", 10)
     c.drawString(left, qr_y + qr_size - 10, cae_txt)
@@ -241,22 +260,18 @@ def generar_pdf_factura_c(
         print("Error generando QR:", e)
 
     # -----------------------------
-    # PIE DE PÁGINA (solicitado)
+    # PIE DE PÁGINA
     # -----------------------------
     footer_y = 30
     c.setFont("Helvetica", 9)
-
     c.drawCentredString(width/2, footer_y + 25, "Tienda online: www.topfundas.com.ar")
     c.drawCentredString(width/2, footer_y + 12, "Whatsapp: +5492914357809")
     c.drawCentredString(width/2, footer_y, "Instagram: @topfundasbb")
-
     c.setFont("Helvetica-Oblique", 9)
     c.drawCentredString(width/2, footer_y - 12,
-                        "Gracias por su compra — comprobante emitido automáticamente por el sistema de facturación de Top Fundas")
+        "Gracias por su compra — comprobante emitido automáticamente por el sistema de facturación de Top Fundas"
+    )
 
-    # -----------------------------
-    # FINAL
-    # -----------------------------
     c.showPage()
     c.save()
 
