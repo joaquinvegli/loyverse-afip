@@ -4,25 +4,23 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.lib.colors import Color, black
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.platypus import Paragraph
-from reportlab.platypus.doctemplate import SimpleDocTemplate
 from io import BytesIO
 import qrcode
 
-
-# ============================
+# -----------------------------
 # PALETA DE COLORES
-# ============================
+# -----------------------------
 COLOR_PRIMARIO = Color(0.027, 0.133, 0.282)   # Azul oscuro
 COLOR_SEC1 = Color(0.976, 0.592, 0.0)         # Naranja
 COLOR_SEC2 = Color(0.113, 0.584, 0.760)       # Celeste
+COLOR_SEC3 = Color(0.937, 0.078, 0.463)       # Rosa
+COLOR_SEC4 = Color(0.875, 0.863, 0.0)         # Amarillo
 
 
-# ============================
-# QR AFIP
-# ============================
 def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto):
+    """
+    Genera el QR AFIP válido según especificación.
+    """
     data = (
         f"https://www.afip.gob.ar/fe/qr/?"
         f"p={{"
@@ -41,7 +39,6 @@ def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto):
         f"\"codAut\":{cae}"
         f"}}"
     )
-
     qr_img = qrcode.make(data)
     buf = BytesIO()
     qr_img.save(buf, format="PNG")
@@ -49,9 +46,6 @@ def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto):
     return buf
 
 
-# ============================
-# FACTURA C — PDF COMPLETO
-# ============================
 def generar_pdf_factura_c(
     razon_social: str,
     domicilio: str,
@@ -66,8 +60,19 @@ def generar_pdf_factura_c(
     items: list,
     total: float,
 ):
+    """
+    Genera el PDF de Factura C con:
+    - Encabezado con logo + FACTURA C
+    - Datos del comercio
+    - Datos del cliente
+    - Detalle de ítems
+    - Total
+    - CAE + vencimiento
+    - QR AFIP
+    - Pie de página con datos de Top Fundas
+    """
 
-    # Carpeta donde se guardarán los PDF generados
+    # Carpeta donde se guardan los PDFs
     folder = "generated_pdfs"
     os.makedirs(folder, exist_ok=True)
 
@@ -76,175 +81,162 @@ def generar_pdf_factura_c(
     c = canvas.Canvas(filename, pagesize=A4)
     width, height = A4
 
-
-    # =====================================================
-    # ENCABEZADO PRINCIPAL
-    # =====================================================
+    # ======================================================
+    # ENCABEZADO
+    # ======================================================
+    # Barra azul superior
     c.setFillColor(COLOR_PRIMARIO)
     c.rect(0, height - 60, width, 60, fill=True, stroke=False)
 
+    # Texto "FACTURA C" centrado aproximadamente
     c.setFillColor("white")
-    c.setFont("Helvetica-Bold", 26)
-    c.drawCentredString(width/2, height - 40, "FACTURA C")
+    c.setFont("Helvetica-Bold", 22)
+    c.drawString(200, height - 40, "FACTURA C")
 
+    # Caja con letra "C" a la izquierda, estilo AFIP
+    c.setFillColor("white")
+    c.setStrokeColor("white")
+    c.rect(40, height - 55, 30, 30, fill=True, stroke=True)
+    c.setFillColor(COLOR_PRIMARIO)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawCentredString(40 + 15, height - 55 + 8, "C")
 
-    # =====================================================
-    # BLOQUE SUPERIOR (LOGO + DATOS COMERCIO)
-    # =====================================================
-    y = height - 100
+    # Código de comprobante a la derecha
+    c.setFillColor("white")
+    c.setFont("Helvetica-Bold", 10)
+    c.drawRightString(width - 40, height - 35, "Cod. 11")
 
-    # LOGO — Pequeño y alineado a la izquierda
+    # ======================================================
+    # LOGO
+    # ======================================================
     logo_path = "static/logo_fixed.png"
     if os.path.exists(logo_path):
         try:
             img = ImageReader(logo_path)
-            c.drawImage(img, 40, y - 60, width=70, preserveAspectRatio=True, mask='auto')
+            # Logo más pequeño, alineado a la izquierda
+            c.drawImage(img, 40, height - 140, width=90, preserveAspectRatio=True, mask='auto')
         except Exception as e:
             print("Error dibujando logo:", e)
-
-
-    # TEXTOS PRINCIPALES DEL NEGOCIO
-    text_x = 130
-    c.setFillColor(black)
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(text_x, y, razon_social)
-
-    c.setFont("Helvetica", 10)
-
-    # WRAP PARA DOMICILIO
-    domicilio_style = ParagraphStyle("domStyle", fontName="Helvetica", fontSize=10, leading=12)
-    domicilio_p = Paragraph(domicilio, domicilio_style)
-
-    domicilio_width = 300
-    domicilio_height = 40
-    domicilio_x = text_x
-    domicilio_y = y - 14
-
-    domicilio_p.wrapOn(c, domicilio_width, domicilio_height)
-    domicilio_p.drawOn(c, domicilio_x, domicilio_y)
-
-    y_data_block_start = domicilio_y - 40
-
-    # Datos fijos
-    lines = [
-        f"CUIT: {cuit}",
-        f"Condición frente al IVA: MONOTRIBUTO",
-        f"Ingresos Brutos: {cuit}",
-        "Fecha de inicio de actividades: 01/01/2020",
-    ]
-
-    y_cursor = y_data_block_start
-    for line in lines:
-        c.drawString(text_x, y_cursor, line)
-        y_cursor -= 14
-
-
-    # =====================================================
-    # CUADRO DERECHA — Datos del comprobante
-    # =====================================================
-    cuadro_x = 330
-    cuadro_y = height - 140
-    cuadro_w = 240
-    cuadro_h = 95
-
-    c.rect(cuadro_x, cuadro_y - cuadro_h, cuadro_w, cuadro_h)
-
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(cuadro_x + 10, cuadro_y - 20, f"Punto de Venta: {pto_vta:04d}")
-    c.drawString(cuadro_x + 10, cuadro_y - 40, f"Comp. Nº: {cbte_nro:08d}")
-
-    c.setFont("Helvetica", 10)
-    c.drawString(cuadro_x + 10, cuadro_y - 60, f"Fecha de emisión: {fecha}")
-    c.drawString(cuadro_x + 10, cuadro_y - 78, "Tipo: FACTURA C (Cod. 11)")
-
-
-    # =====================================================
-    # SEPARADOR
-    # =====================================================
-    c.setStrokeColor(COLOR_SEC1)
-    c.setLineWidth(2)
-    c.line(40, y_cursor - 10, width - 40, y_cursor - 10)
-
-    y = y_cursor - 40
-
-
-    # =====================================================
-    # DATOS DEL CLIENTE
-    # =====================================================
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(40, y, "Datos del Cliente")
-
-    y -= 18
-    c.setFont("Helvetica", 10)
-    c.drawString(40, y, f"Nombre: {cliente_nombre}")
-
-    y -= 14
-    if cliente_dni:
-        c.drawString(40, y, f"DNI: {cliente_dni}")
     else:
-        c.drawString(40, y, "DNI: Consumidor Final")
+        print("Logo no encontrado en:", logo_path)
 
-    y -= 30
+    # ======================================================
+    # DATOS DEL COMERCIO
+    # (bajados un poco para que NO se superpongan con nada)
+    # ======================================================
+    c.setFillColor(black)
+    c.setFont("Helvetica-Bold", 11)
 
+    # Bajamos ~20 puntos respecto a la versión anterior
+    base_y_comercio = height - 185
 
-    # =====================================================
+    c.drawString(40, base_y_comercio, razon_social)
+
+    c.setFont("Helvetica", 10)
+    c.drawString(40, base_y_comercio - 15, domicilio)
+    c.drawString(40, base_y_comercio - 30, f"CUIT: {cuit}")
+
+    # Estos textos son genéricos, podés ajustarlos si querés
+    c.drawString(40, base_y_comercio - 45, f"Punto de Venta: {pto_vta:04d}")
+    c.drawString(220, base_y_comercio - 45, f"Comprobante Nº: {cbte_nro:08d}")
+    c.drawString(40, base_y_comercio - 60, f"Fecha de emisión: {fecha}")
+
+    # ======================================================
+    # DATOS DEL CLIENTE
+    # ======================================================
+    c.setFont("Helvetica-Bold", 11)
+    y_cliente_titulo = base_y_comercio - 95
+    c.drawString(40, y_cliente_titulo, "Datos del Cliente")
+
+    c.setFont("Helvetica", 10)
+    c.drawString(40, y_cliente_titulo - 15, f"Nombre: {cliente_nombre or 'Consumidor Final'}")
+
+    if cliente_dni:
+        c.drawString(40, y_cliente_titulo - 30, f"DNI: {cliente_dni}")
+    else:
+        c.drawString(40, y_cliente_titulo - 30, "DNI: Consumidor Final")
+
+    # ======================================================
     # ITEMS
-    # =====================================================
+    # ======================================================
+    y = y_cliente_titulo - 65
+
     c.setFont("Helvetica-Bold", 11)
     c.drawString(40, y, "Descripción")
     c.drawString(300, y, "Cant.")
     c.drawString(360, y, "Precio")
     c.drawString(440, y, "Subtotal")
 
-    y -= 12
+    y -= 10
     c.setStrokeColor(COLOR_SEC1)
     c.line(40, y, width - 40, y)
     y -= 20
 
     c.setFont("Helvetica", 10)
-
     for it in items:
         desc = it["descripcion"]
         cant = it["cantidad"]
         precio = it["precio"]
         subtotal = cant * precio
 
-        c.drawString(40, y, desc[:45])
+        c.drawString(40, y, desc[:40])
         c.drawString(300, y, str(cant))
         c.drawString(360, y, f"${precio:.2f}")
         c.drawString(440, y, f"${subtotal:.2f}")
 
-        y -= 16
+        y -= 18
 
+        # Si se acerca demasiado al pie, podrías implementar salto de página
+        # pero por ahora asumimos cantidad moderada de ítems.
 
-    # =====================================================
+    # ======================================================
     # TOTAL
-    # =====================================================
-    c.setFont("Helvetica-Bold", 14)
+    # ======================================================
+    c.setFont("Helvetica-Bold", 13)
     c.setFillColor(COLOR_SEC2)
     c.drawString(40, y - 10, f"TOTAL: ${total:.2f}")
     c.setFillColor(black)
 
-    # =====================================================
-    # CAE + QR estilo AFIP
-    # =====================================================
-    y_qr = 130
+    # ======================================================
+    # CAE + VENCIMIENTO (estilo AFIP, cerca del QR)
+    # ======================================================
+    y_cae = 160  # Fijo, para dejar espacio al pie y al QR
+    c.setFont("Helvetica", 9)
+    c.drawString(40, y_cae, f"CAE: {cae}")
+    c.drawString(200, y_cae, f"Vencimiento CAE: {cae_vto}")
 
-    c.setFont("Helvetica", 10)
-    c.drawString(40, y_qr + 80, f"CAE: {cae}")
-    c.drawString(40, y_qr + 65, f"Vto. CAE: {cae_vto}")
-
+    # ======================================================
+    # QR AFIP
+    # ======================================================
     try:
         qr_buf = generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto)
         qr_img = ImageReader(qr_buf)
-        c.drawImage(qr_img, width - 160, y_qr, width=120, height=120)
+        # Abajo a la derecha, como AFIP
+        c.drawImage(qr_img, width - 160, 40, width=120, height=120)
     except Exception as e:
         print("Error generando QR:", e)
 
+    # ======================================================
+    # PIE DE PÁGINA
+    # ======================================================
+    c.setFont("Helvetica", 8)
+    c.setFillColor(Color(0.3, 0.3, 0.3))  # Gris suave
 
-    # =====================================================
-    # GUARDAR PDF
-    # =====================================================
+    footer_y1 = 50
+    footer_y2 = 36
+    footer_y3 = 22
+
+    c.drawString(40, footer_y1, "Tienda online: www.topfundas.com.ar")
+    c.drawString(40, footer_y2, "WhatsApp: +54 9 291 435 7809    Instagram: @topfundasbb")
+    c.drawString(
+        40,
+        footer_y3,
+        "Gracias por su compra. Este comprobante fue generado automáticamente por el sistema de facturación de Top Fundas."
+    )
+
+    # ======================================================
+    # FINALIZAR
+    # ======================================================
     c.showPage()
     c.save()
 
