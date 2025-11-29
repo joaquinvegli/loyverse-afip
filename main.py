@@ -323,3 +323,15 @@ def where_pdf():
         "files_in_src": os.listdir("/opt/render/project/src")
     }
 
+@app.get("/debug/clear-pycache")
+def clear_pycache():
+    import os, shutil
+    removed = []
+    for root, dirs, files in os.walk("/opt/render/project/src"):
+        for d in dirs:
+            if d == "__pycache__":
+                full = os.path.join(root, d)
+                shutil.rmtree(full)
+                removed.append(full)
+    return {"removed": removed}
+
