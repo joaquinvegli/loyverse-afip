@@ -19,7 +19,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,   # 🔥 FIX PARA STACKBLITZ
+    allow_credentials=False,   # FIX PARA STACKBLITZ
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -244,7 +244,7 @@ def debug_wsaa_client():
 
 
 # ============================================================
-# NUEVOS ENDPOINTS PARA DEBUG DEL FILESYSTEM
+# DEBUG FILESYSTEM
 # ============================================================
 
 @app.get("/debug/list-root")
@@ -275,10 +275,9 @@ def check_logo():
         "cwd": os.getcwd()
     }
 
+
 @app.get("/debug/static-full")
 def debug_static_full():
-    import os
-
     folder = "static"
     if not os.path.exists(folder):
         return {"exists": False, "error": "Carpeta static NO existe en este entorno."}
@@ -300,3 +299,15 @@ def debug_static_full():
         "static_path": os.path.abspath(folder),
         "files": archivos,
     }
+
+
+# ============================================================
+# NUEVO: MOSTRAR EL CONTENIDO REAL DE pdf_afip.py
+# ============================================================
+@app.get("/debug/show-pdf-code")
+def debug_show_pdf_code():
+    try:
+        with open("pdf_afip.py", "r", encoding="utf-8") as f:
+            return {"content": f.read()}
+    except Exception as e:
+        return {"error": str(e)}
