@@ -342,4 +342,24 @@ def clear_pycache():
                 removed.append(full)
     return {"removed": removed}
 
+@app.get("/debug/test-logo")
+def debug_test_logo():
+    try:
+        path = "static/logo_fixed.png"
+
+        if not os.path.exists(path):
+            return {"ok": False, "error": "NO existe el archivo", "path": os.path.abspath(path)}
+
+        from reportlab.lib.utils import ImageReader
+
+        try:
+            img = ImageReader(path)
+            w, h = img.getSize()
+            return {"ok": True, "size": [w, h], "path": os.path.abspath(path)}
+        except Exception as e:
+            return {"ok": False, "error": str(e), "path": os.path.abspath(path)}
+
+    except Exception as e:
+        return {"ok": False, "fatal": str(e)}
+
 
