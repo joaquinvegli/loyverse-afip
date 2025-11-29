@@ -18,7 +18,7 @@ COLOR_SEC3 = Color(0.937, 0.078, 0.463)       # #EF1476
 COLOR_SEC4 = Color(0.875, 0.863, 0.0)         # #DFDC00
 
 # URL RAW del logo
-LOGO_URL = "https://raw.githubusercontent.com/joaquinvegli/loyverse-afip/main/static/logo.png"
+LOGO_URL = "https://raw.githubusercontent.com/joaquinvegli/loyverse-afip/main/static/logo.jpg"
 
 
 def cargar_logo_en_memoria():
