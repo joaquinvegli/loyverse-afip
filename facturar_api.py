@@ -3,14 +3,14 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 import base64
+import os
 
 from afip import wsfe_facturar
 from pdf_afip import generar_pdf_factura_c
 
-# NUEVO: gestor del JSON que registra facturas
-from json_db import esta_facturada, registrar_factura
+# JSON DB
+from json_db import esta_facturada, registrar_factura, obtener_factura
 
-# Datos fijos de tu negocio
 RAZON_SOCIAL = "JOAQUIN VEGLI"
 DOMICILIO = "ALSINA 155 LOC 15, BAHIA BLANCA, BUENOS AIRES. CP: 8000"
 CUIT = "20391571865"
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api", tags=["facturacion"])
 
 
 # ====================================================
-# Esquemas de datos
+# Esquemas
 # ====================================================
 class ClienteData(BaseModel):
     id: Optional[str] = None
@@ -42,19 +42,19 @@ class FacturaRequest(BaseModel):
 
 
 # ====================================================
-# ENDPOINT PRINCIPAL — FACTURA C EN MODO SEGURO
+# Endpoint facturar
 # ====================================================
 @router.post("/facturar")
 async def facturar(req: FacturaRequest):
 
-    # -------- ANTI DOBLE FACTURACIÓN -----------------
+    # 🔥 ANTI DOBLE FACTURACIÓN
     if esta_facturada(req.receipt_id):
         raise HTTPException(
             status_code=400,
-            detail=f"La venta {req.receipt_id} ya fue facturada anteriormente."
+            detail=f"La venta {req.receipt_id} ya fue facturada."
         )
 
-    # -------- MODO SEGURO (lo tenías así) ------------
+    # 🚧 MODO SEGURO
     if req.total > 100:
         raise HTTPException(
             status_code=400,
@@ -62,10 +62,9 @@ async def facturar(req: FacturaRequest):
         )
 
     try:
-        tipo_comprobante = 11  # FACTURA C
+        tipo_comprobante = 11  # Factura C
         tipo_doc = 96          # DNI
 
-        # fallback a consumidor final
         doc_nro = 0
         if req.cliente and req.cliente.dni:
             try:
@@ -73,9 +72,7 @@ async def facturar(req: FacturaRequest):
             except:
                 doc_nro = 0
 
-        # =====================================================
-        # 1) Llamar AFIP — obtener CAE + fecha vencimiento
-        # =====================================================
+        # 1) AFIP
         result = wsfe_facturar(
             tipo_cbte=tipo_comprobante,
             doc_tipo=tipo_doc,
@@ -93,9 +90,7 @@ async def facturar(req: FacturaRequest):
         cbte_nro = result["cbte_nro"]
         pto_vta = result["pto_vta"]
 
-        # ================================
-        # 2) Generar PDF oficial AFIP
-        # ================================
+        # 2) PDF
         from datetime import datetime
         fecha_hoy = datetime.now().strftime("%d/%m/%Y")
 
@@ -118,25 +113,30 @@ async def facturar(req: FacturaRequest):
             total=req.total,
         )
 
-        # ================================
-        # 3) Convertir PDF → base64
-        # ================================
-        with open(pdf_path, "rb") as f:
-            pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
+        # 🔥 3) Guardar copia permanente del PDF
+        os.makedirs("facturas_pdf", exist_ok=True)
+        destino = f"facturas_pdf/{req.receipt_id}.pdf"
+        try:
+            os.replace(pdf_path, destino)  # mueve el archivo
+        except:
+            # fallback copia
+            with open(pdf_path, "rb") as fr:
+                with open(destino, "wb") as fw:
+                    fw.write(fr.read())
 
-        # ================================
-        # 4) REGISTRAR FACTURA EN JSON
-        # ================================
+        # 4) Registrar en JSON
         registrar_factura(req.receipt_id, {
             "cbte_nro": cbte_nro,
             "pto_vta": pto_vta,
             "cae": cae,
             "vencimiento": venc,
+            "fecha": fecha_hoy,
         })
 
-        # ================================
-        # 5) Respuesta al frontend
-        # ================================
+        # 5) Devolver base64
+        with open(destino, "rb") as f:
+            pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
+
         return {
             "status": "ok",
             "receipt_id": req.receipt_id,
@@ -149,24 +149,25 @@ async def facturar(req: FacturaRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    @router.get("/factura/pdf/{receipt_id}")
-async def obtener_pdf_factura(receipt_id: str):
-    from json_db import obtener_factura
-    factura = obtener_factura(receipt_id)
 
-    if not factura:
+# ====================================================
+# NUEVO: obtener PDF por receipt_id
+# ====================================================
+@router.get("/factura/pdf/{receipt_id}")
+async def obtener_pdf(receipt_id: str):
+
+    datos = obtener_factura(receipt_id)
+    if not datos:
         raise HTTPException(
             status_code=404,
-            detail="No existe factura registrada para este recibo"
+            detail="No hay factura registrada para este recibo."
         )
 
-    # Ruta donde se guardan los PDFs
     pdf_path = f"facturas_pdf/{receipt_id}.pdf"
-
     if not os.path.exists(pdf_path):
         raise HTTPException(
             status_code=404,
-            detail="El PDF de esta factura no se encuentra en el servidor"
+            detail="El PDF no está guardado en el servidor."
         )
 
     with open(pdf_path, "rb") as f:
@@ -174,5 +175,6 @@ async def obtener_pdf_factura(receipt_id: str):
 
     return {
         "receipt_id": receipt_id,
-        "pdf_base64": b64
+        "pdf_base64": b64,
+        "info": datos,
     }
