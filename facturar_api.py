@@ -75,15 +75,22 @@ async def facturar(req: FacturaRequest):
 
     try:
         tipo_comprobante = 11  # FACTURA C
-        tipo_doc = 96          # DNI
 
-        # DNI numérico o fallback
-        doc_nro = 0
+        # ============================================================
+        # FIX IMPORTANTE — Tipo de documento según si tiene DNI o no
+        # ============================================================
         if req.cliente and req.cliente.dni:
+            # Cliente con DNI
+            tipo_doc = 96  # DNI
             try:
                 doc_nro = int(req.cliente.dni)
             except:
                 doc_nro = 0
+        else:
+            # Consumidor Final (sin DNI)
+            tipo_doc = 99  # Consumidor Final
+            doc_nro = 0
+        # ============================================================
 
         # 2) AFIP — CAE + vencimiento
         result = wsfe_facturar(
