@@ -3,8 +3,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 import base64
+
 from afip import wsfe_facturar
 from pdf_afip import generar_pdf_factura_c
+
+# NUEVO: gestor del JSON que registra facturas
+from json_db import esta_facturada, registrar_factura
 
 # Datos fijos de tu negocio
 RAZON_SOCIAL = "JOAQUIN VEGLI"
@@ -43,7 +47,14 @@ class FacturaRequest(BaseModel):
 @router.post("/facturar")
 async def facturar(req: FacturaRequest):
 
-    # -------- MODO SEGURO ------------
+    # -------- ANTI DOBLE FACTURACIÓN -----------------
+    if esta_facturada(req.receipt_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"La venta {req.receipt_id} ya fue facturada anteriormente."
+        )
+
+    # -------- MODO SEGURO (lo tenías así) ------------
     if req.total > 100:
         raise HTTPException(
             status_code=400,
@@ -80,6 +91,7 @@ async def facturar(req: FacturaRequest):
         cae = result["cae"]
         venc = result["vencimiento"]
         cbte_nro = result["cbte_nro"]
+        pto_vta = result["pto_vta"]
 
         # ================================
         # 2) Generar PDF oficial AFIP
@@ -91,11 +103,11 @@ async def facturar(req: FacturaRequest):
             razon_social=RAZON_SOCIAL,
             domicilio=DOMICILIO,
             cuit=CUIT,
-            pto_vta=int(result["pto_vta"]),
+            pto_vta=int(pto_vta),
             cbte_nro=cbte_nro,
             fecha=fecha_hoy,
             cae=cae,
-            cae_vto=venc,  # 🔥 CORRECTO: se llama cae_vto
+            cae_vto=venc,
             cliente_nombre=req.cliente.name,
             cliente_dni=req.cliente.dni,
             items=[{
@@ -113,7 +125,17 @@ async def facturar(req: FacturaRequest):
             pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
 
         # ================================
-        # 4) Respuesta al frontend
+        # 4) REGISTRAR FACTURA EN JSON
+        # ================================
+        registrar_factura(req.receipt_id, {
+            "cbte_nro": cbte_nro,
+            "pto_vta": pto_vta,
+            "cae": cae,
+            "vencimiento": venc,
+        })
+
+        # ================================
+        # 5) Respuesta al frontend
         # ================================
         return {
             "status": "ok",
