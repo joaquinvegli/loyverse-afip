@@ -1,7 +1,6 @@
 import json
 import os
 from typing import Dict, Any
-from datetime import datetime
 
 DB_PATH = "facturas_db.json"
 
@@ -26,25 +25,13 @@ def esta_facturada(receipt_id: str) -> bool:
     return receipt_id in db
 
 
-def obtener_factura(receipt_id: str) -> Dict[str, Any] | None:
-    """
-    Devuelve todos los datos guardados de la factura:
-    cbte_nro, pto_vta, cae, vencimiento, fecha.
-    """
-    db = cargar_db()
-    return db.get(receipt_id)
-
-
 def registrar_factura(receipt_id: str, datos: Dict[str, Any]):
-    """
-    Guarda los datos de la factura y agrega automáticamente la fecha
-    (YYYY-MM-DD) si no estaba incluida.
-    """
     db = cargar_db()
-
-    # Agregar fecha si no existe
-    if "fecha" not in datos:
-        datos["fecha"] = datetime.now().strftime("%Y-%m-%d")
-
     db[receipt_id] = datos
     guardar_db(db)
+
+
+# NUEVO — obtener datos de factura
+def obtener_factura(receipt_id: str) -> Dict[str, Any] | None:
+    db = cargar_db()
+    return db.get(receipt_id)
