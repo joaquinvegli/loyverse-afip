@@ -31,7 +31,6 @@ def registrar_factura(receipt_id: str, datos: Dict[str, Any]):
     guardar_db(db)
 
 
-# NUEVO — obtener datos de factura
 def obtener_factura(receipt_id: str) -> Dict[str, Any] | None:
     db = cargar_db()
     return db.get(receipt_id)
