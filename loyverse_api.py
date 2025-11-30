@@ -11,6 +11,9 @@ from loyverse import (
     get_customer,
 )
 
+# 🔥 IMPORTANTE — consultar registro de facturación
+from json_db import esta_facturada
+
 router = APIRouter(prefix="/api", tags=["ventas"])
 
 
@@ -18,16 +21,10 @@ router = APIRouter(prefix="/api", tags=["ventas"])
 # Función para limpiar el DNI (solo números)
 # ============================================
 def limpiar_dni(valor: str):
-    """
-    Recibe el contenido del campo 'note' de Loyverse
-    y devuelve solo los dígitos (0-9).
-    Si no hay números, devuelve None.
-    """
     if not valor:
         return None
 
     solo_numeros = "".join(c for c in valor if c.isdigit())
-
     return solo_numeros if solo_numeros else None
 
 
@@ -54,10 +51,13 @@ async def listar_ventas(
             },
         )
 
+    # Normalizar ventas
     ventas = [normalize_receipt(r) for r in receipts_raw]
 
+    # 🔥 CORRECCIÓN CRÍTICA:
+    # Marcar ventas facturadas según archivo JSON
     for v in ventas:
-        v.setdefault("already_invoiced", False)
+        v["already_invoiced"] = esta_facturada(v["receipt_id"])
 
     return ventas
 
@@ -67,11 +67,6 @@ async def listar_ventas(
 # ============================================
 @router.get("/clientes/{customer_id}")
 async def obtener_cliente(customer_id: str):
-    """
-    Devuelve datos del cliente desde Loyverse.
-    Incluye: name, email, phone, dni (limpio).
-    """
-
     data = await get_customer(customer_id)
 
     if data is None:
@@ -84,7 +79,6 @@ async def obtener_cliente(customer_id: str):
             "dni": None,
         }
 
-    # Limpiar campo DNI (note)
     dni_limpio = limpiar_dni(data.get("note"))
 
     return {
@@ -93,7 +87,7 @@ async def obtener_cliente(customer_id: str):
         "name": data.get("name"),
         "email": data.get("email"),
         "phone": data.get("phone_number"),
-        "dni": dni_limpio,  # DNI limpio y listo para AFIP
+        "dni": dni_limpio,
     }
 
 
