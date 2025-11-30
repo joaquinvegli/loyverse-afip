@@ -148,3 +148,31 @@ async def facturar(req: FacturaRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+    @router.get("/factura/pdf/{receipt_id}")
+async def obtener_pdf_factura(receipt_id: str):
+    from json_db import obtener_factura
+    factura = obtener_factura(receipt_id)
+
+    if not factura:
+        raise HTTPException(
+            status_code=404,
+            detail="No existe factura registrada para este recibo"
+        )
+
+    # Ruta donde se guardan los PDFs
+    pdf_path = f"facturas_pdf/{receipt_id}.pdf"
+
+    if not os.path.exists(pdf_path):
+        raise HTTPException(
+            status_code=404,
+            detail="El PDF de esta factura no se encuentra en el servidor"
+        )
+
+    with open(pdf_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+
+    return {
+        "receipt_id": receipt_id,
+        "pdf_base64": b64
+    }
