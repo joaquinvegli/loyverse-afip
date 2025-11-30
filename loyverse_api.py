@@ -11,8 +11,8 @@ from loyverse import (
     get_customer,
 )
 
-# 🔥 IMPORTANTE — consultar registro de facturación
-from json_db import esta_facturada
+# 🔥 IMPORTANTE: consultar información de facturas
+from json_db import esta_facturada, obtener_factura
 
 router = APIRouter(prefix="/api", tags=["ventas"])
 
@@ -51,13 +51,23 @@ async def listar_ventas(
             },
         )
 
-    # Normalizar ventas
+    # Normalizar estructura de cada venta
     ventas = [normalize_receipt(r) for r in receipts_raw]
 
-    # 🔥 CORRECCIÓN CRÍTICA:
-    # Marcar ventas facturadas según archivo JSON
+    # 🔥 FIX CRÍTICO:
+    # Marcar si cada venta está facturada y devolver la info completa
     for v in ventas:
-        v["already_invoiced"] = esta_facturada(v["receipt_id"])
+        receipt_id = v["receipt_id"]
+        info = obtener_factura(receipt_id)
+
+        if info:
+            # Marca real
+            v["already_invoiced"] = True
+            # Devolver datos completos de la factura
+            v["invoice"] = info
+        else:
+            v["already_invoiced"] = False
+            v["invoice"] = None
 
     return ventas
 
