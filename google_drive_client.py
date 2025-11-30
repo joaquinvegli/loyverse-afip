@@ -1,70 +1,80 @@
 import os
-import json
-import base64
 from typing import Tuple
 
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# Alcance mínimo para manipular archivos de Drive
+
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 
 def get_drive_service():
     """
-    Crea un cliente autenticado de Google Drive usando
-    las credenciales del service account en la env var
-    GOOGLE_SERVICE_ACCOUNT_JSON.
+    Autenticación OAuth2 usando:
+    - GOOGLE_CLIENT_ID
+    - GOOGLE_CLIENT_SECRET
+    - GOOGLE_REFRESH_TOKEN
+    Esto permite subir archivos al Drive PERSONAL del usuario.
     """
-    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
-    if not raw:
-        raise RuntimeError("Falta GOOGLE_SERVICE_ACCOUNT_JSON en variables de entorno")
 
-    info = json.loads(raw)
+    client_id = os.environ.get("GOOGLE_CLIENT_ID")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
+    refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN")
 
-    creds = service_account.Credentials.from_service_account_info(
-        info,
-        scopes=SCOPES
+    if not client_id or not client_secret or not refresh_token:
+        raise RuntimeError(
+            "Faltan variables OAuth2: GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN"
+        )
+
+    creds = Credentials(
+        None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=client_id,
+        client_secret=client_secret,
+        scopes=SCOPES,
     )
 
     service = build("drive", "v3", credentials=creds)
     return service
 
 
-def upload_pdf_to_drive(local_pdf_path: str, receipt_id: str) -> Tuple[str, str]:
+
+def upload_pdf_to_drive(local_pdf_path: str, pdf_name: str) -> Tuple[str, str]:
     """
-    Sube un PDF a la carpeta de Drive definida por GOOGLE_DRIVE_FOLDER_ID.
+    Sube un PDF usando OAuth2 a la carpeta especificada.
     Devuelve (file_id, public_url)
     """
+
     folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID")
     if not folder_id:
         raise RuntimeError("Falta GOOGLE_DRIVE_FOLDER_ID en variables de entorno")
 
     service = get_drive_service()
 
+    # Metadatos del archivo
     file_metadata = {
-        "name": f"Factura_{receipt_id}.pdf",
+        "name": pdf_name,
         "parents": [folder_id],
     }
 
     media = MediaFileUpload(local_pdf_path, mimetype="application/pdf")
 
-    file = service.files().create(
-        body=file_metadata,
-        media_body=media,
-        fields="id"
-    ).execute()
+    # Crear archivo en Drive
+    created = (
+        service.files()
+        .create(body=file_metadata, media_body=media, fields="id")
+        .execute()
+    )
 
-    file_id = file.get("id")
+    file_id = created.get("id")
 
-    # Hacer el archivo accesible por link (cualquiera con el enlace)
+    # Hacerlo público por link
     service.permissions().create(
         fileId=file_id,
-        body={
-            "role": "reader",
-            "type": "anyone"
-        }
+        body={"type": "anyone", "role": "reader"},
+        fields="id",
     ).execute()
 
     public_url = f"https://drive.google.com/uc?id={file_id}&export=download"
