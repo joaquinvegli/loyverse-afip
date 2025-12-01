@@ -1,131 +1,102 @@
 # email_api.py
+import os
 import base64
 import httpx
-import os
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from json_db import obtener_factura, listado_facturas
+from json_db import obtener_factura
 
 router = APIRouter(prefix="/api", tags=["email"])
 
-# ===========================
-# MODELOS
-# ===========================
+# =====================================================
+# MODELO REQUEST
+# =====================================================
 class EmailRequest(BaseModel):
     receipt_id: str
     email: str
 
 
-# ===========================
-# 1) LISTAR FACTURAS
-# ===========================
-@router.get("/facturas")
-def api_listar_facturas():
-    """
-    Devuelve todas las facturas registradas en facturas_db.json
-    """
-    db = listado_facturas()
-    return {"facturas": db}
-
-
-# ===========================
-# 2) ENVIAR EMAIL
-# ===========================
+# =====================================================
+# ENVIAR EMAIL CON RESEND
+# =====================================================
 @router.post("/enviar_email")
 def api_enviar_email(req: EmailRequest):
 
-    # ----------------------------------------
-    # 1) Buscar datos de la factura en JSON
-    # ----------------------------------------
+    # ================================
+    # 1) BUSCAR FACTURA EN JSON DB
+    # ================================
     factura = obtener_factura(req.receipt_id)
     if not factura:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No existe factura registrada para receipt_id {req.receipt_id}"
-        )
+        raise HTTPException(404, f"No existe factura para receipt_id {req.receipt_id}")
 
     drive_url = factura.get("drive_url")
     if not drive_url:
-        raise HTTPException(
-            status_code=400,
-            detail="La factura no tiene drive_url guardado. No se puede adjuntar PDF."
-        )
+        raise HTTPException(400, "La factura no tiene drive_url guardado")
 
-    # ----------------------------------------
-    # 2) Descargar el PDF desde Google Drive (SIGUIENDO REDIRECTS)
-    # ----------------------------------------
+    # ================================
+    # 2) DESCARGAR EL PDF DE DRIVE
+    # ================================
     try:
-        # Google genera redirecciones 303 → las seguimos
-        r = httpx.get(
-            drive_url,
-            follow_redirects=True,
-            timeout=30
-        )
+        r = httpx.get(drive_url, follow_redirects=True, timeout=30)
         r.raise_for_status()
         pdf_bytes = r.content
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"No se pudo descargar el PDF desde Drive: {e}"
-        )
+        raise HTTPException(500, f"No se pudo descargar el PDF desde Drive: {e}")
 
     pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
 
-    # ----------------------------------------
-    # 3) Preparar cuerpo del email
-    # ----------------------------------------
+    # ================================
+    # 3) PREPARAR EMAIL
+    # ================================
     RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
-
     if not RESEND_API_KEY:
-        raise HTTPException(500, "Falta RESEND_API_KEY en las environment variables")
+        raise HTTPException(500, "Falta RESEND_API_KEY en las env variables")
 
     headers = {
         "Authorization": f"Bearer {RESEND_API_KEY}",
         "Content-Type": "application/json"
     }
 
-    asunto = f"Factura de compra - Top Fundas"
-    cuerpo = (
+    subject = f"Factura de compra - Top Fundas"
+
+    text_body = (
         "Hola! 👋\n\n"
         "Te enviamos la factura correspondiente a tu compra en Top Fundas.\n\n"
-        "Muchas gracias por elegirnos.\n\n"
+        "Muchas gracias por elegirnos 🙌\n\n"
         "— Top Fundas"
     )
 
     payload = {
-        "from": "Top Fundas <on-behalf-of@resend.dev>",
+        "from": "Top Fundas <onboarding@resend.dev>",
         "to": req.email,
-        "subject": asunto,
-        "text": cuerpo,
+        "subject": subject,
+        "text": text_body,
         "attachments": [
             {
                 "filename": f"Factura_{factura['cbte_nro']}.pdf",
                 "content": pdf_b64,
-                "type": "application/pdf"
+                "type": "application/pdf",
             }
-        ]
+        ],
     }
 
-    # ----------------------------------------
-    # 4) Enviar con Resend
-    # ----------------------------------------
+    # ================================
+    # 4) ENVIAR VIA RESEND
+    # ================================
     try:
-        response = httpx.post(
+        resp = httpx.post(
             "https://api.resend.com/emails",
             headers=headers,
             json=payload,
             timeout=30
         )
-        response.raise_for_status()
+        resp.raise_for_status()
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error enviando email con Resend: {e}"
-        )
+        raise HTTPException(500, f"Error enviando email con Resend: {e}")
 
     return {
         "status": "ok",
         "message": f"Email enviado correctamente a {req.email}",
-        "resend_response": response.json()
+        "resend_response": resp.json()
     }
