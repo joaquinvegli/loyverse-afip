@@ -3,13 +3,14 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 import base64
-import os
+from datetime import datetime
 
 from afip import wsfe_facturar
 from pdf_afip import generar_pdf_factura_c
 
 from json_db import esta_facturada, registrar_factura
-from google_drive_client import upload_pdf_to_drive  # 👈 (ESTA VERSIÓN YA TENÍA DRIVE)
+from google_drive_client import upload_pdf_to_drive  # 👈 Drive OK
+
 
 RAZON_SOCIAL = "JOAQUIN VEGLI"
 DOMICILIO = "ALSINA 155 LOC 15, BAHIA BLANCA, BUENOS AIRES. CP: 8000"
@@ -41,14 +42,14 @@ class FacturaRequest(BaseModel):
 @router.post("/facturar")
 async def facturar(req: FacturaRequest):
 
-    # -------- ANTI DOBLE FACTURACIÓN -----------------
+    # 🔒 Anti doble facturación
     if esta_facturada(req.receipt_id):
         raise HTTPException(
             status_code=400,
             detail=f"La venta {req.receipt_id} ya fue facturada anteriormente."
         )
 
-    # -------- MODO SEGURO ------------ (esto ya existía)
+    # 🧪 Modo seguro
     if req.total > 100:
         raise HTTPException(
             status_code=400,
@@ -59,7 +60,7 @@ async def facturar(req: FacturaRequest):
         tipo_comprobante = 11  # FACTURA C
         tipo_doc = 96          # DNI
 
-        # fallback a consumidor final
+        # DNI limpio o fallback
         doc_nro = 0
         if req.cliente and req.cliente.dni:
             try:
@@ -67,18 +68,21 @@ async def facturar(req: FacturaRequest):
             except:
                 doc_nro = 0
 
-        # =====================================================
-        # 1) Llamar AFIP — obtener CAE + fecha vencimiento
-        # =====================================================
+        # ======================================
+        # 1) AFIP → CAE + vencimiento
+        # ======================================
         result = wsfe_facturar(
             tipo_cbte=tipo_comprobante,
             doc_tipo=tipo_doc,
             doc_nro=doc_nro,
-            items=[{
-                "descripcion": item.nombre,
-                "cantidad": item.cantidad,
-                "precio": item.precio_unitario,
-            } for item in req.items],
+            items=[
+                {
+                    "descripcion": it.nombre,
+                    "cantidad": it.cantidad,
+                    "precio": it.precio_unitario,
+                }
+                for it in req.items
+            ],
             total=req.total,
         )
 
@@ -87,10 +91,9 @@ async def facturar(req: FacturaRequest):
         cbte_nro = result["cbte_nro"]
         pto_vta = result["pto_vta"]
 
-        # ================================
-        # 2) Generar PDF oficial AFIP
-        # ================================
-        from datetime import datetime
+        # ======================================
+        # 2) PDF local
+        # ======================================
         fecha_hoy = datetime.now().strftime("%d/%m/%Y")
 
         pdf_path = generar_pdf_factura_c(
@@ -104,22 +107,25 @@ async def facturar(req: FacturaRequest):
             cae_vto=venc,
             cliente_nombre=req.cliente.name,
             cliente_dni=req.cliente.dni,
-            items=[{
-                "descripcion": it.nombre,
-                "cantidad": it.cantidad,
-                "precio": it.precio_unitario,
-            } for it in req.items],
+            items=[
+                {
+                    "descripcion": it.nombre,
+                    "cantidad": it.cantidad,
+                    "precio": it.precio_unitario,
+                }
+                for it in req.items
+            ],
             total=req.total,
         )
 
-        # ================================
-        # 3) Subir PDF a Google Drive
-        # ================================
+        # ======================================
+        # 3) Subir a Google Drive  (FUNCIONABA)
+        # ======================================
         drive_id, drive_url = upload_pdf_to_drive(pdf_path, req.receipt_id)
 
-        # ================================
-        # 4) REGISTRAR FACTURA
-        # ================================
+        # ======================================
+        # 4) Guardar en JSON local
+        # ======================================
         registrar_factura(req.receipt_id, {
             "cbte_nro": cbte_nro,
             "pto_vta": pto_vta,
@@ -130,15 +136,12 @@ async def facturar(req: FacturaRequest):
             "drive_url": drive_url,
         })
 
-        # ================================
-        # 5) Leer PDF local → base64
-        # ================================
+        # ======================================
+        # 5) Base64 para abrir en el navegador
+        # ======================================
         with open(pdf_path, "rb") as f:
             pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
 
-        # ================================
-        # 6) Respuesta al frontend
-        # ================================
         return {
             "status": "ok",
             "receipt_id": req.receipt_id,
