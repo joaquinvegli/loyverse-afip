@@ -1,6 +1,7 @@
 # email_api.py
 import base64
 import httpx
+import os
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -52,13 +53,15 @@ def api_enviar_email(req: EmailRequest):
         )
 
     # ----------------------------------------
-    # 2) Descargar el PDF desde Google Drive
+    # 2) Descargar el PDF desde Google Drive (SIGUIENDO REDIRECTS)
     # ----------------------------------------
-    # Link directo a archivo PDF
-    # https://drive.google.com/uc?id=<ID>&export=download
     try:
-        drive_direct_url = drive_url.replace("export=download", "export=download")
-        r = httpx.get(drive_direct_url)
+        # Google genera redirecciones 303 → las seguimos
+        r = httpx.get(
+            drive_url,
+            follow_redirects=True,
+            timeout=30
+        )
         r.raise_for_status()
         pdf_bytes = r.content
     except Exception as e:
@@ -105,7 +108,7 @@ def api_enviar_email(req: EmailRequest):
     }
 
     # ----------------------------------------
-    # 4) Llamar a la API de Resend
+    # 4) Enviar con Resend
     # ----------------------------------------
     try:
         response = httpx.post(
