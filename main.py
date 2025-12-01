@@ -7,6 +7,7 @@ from debug import router as debug_router
 from loyverse_api import router as loyverse_router
 from loyverse_debug import router as loyverse_debug_router
 from facturar_api import router as facturar_router
+from email_api import router as email_router   # 👈 NUEVO
 
 app = FastAPI()
 
@@ -35,6 +36,7 @@ app.include_router(debug_router)
 app.include_router(loyverse_router)
 app.include_router(loyverse_debug_router)
 app.include_router(facturar_router)
+app.include_router(email_router)  # 👈 NUEVO - API de emails y listado de facturas
 
 # ============================================================
 # DEBUG VARIOS
