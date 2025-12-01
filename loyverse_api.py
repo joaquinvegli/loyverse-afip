@@ -51,23 +51,26 @@ async def listar_ventas(
             },
         )
 
-    # Normalizar estructura de cada venta
-    ventas = [normalize_receipt(r) for r in receipts_raw]
+    ventas = []
 
-    # 🔥 FIX CRÍTICO:
-    # Marcar si cada venta está facturada y devolver la info completa
-    for v in ventas:
+    for r in receipts_raw:
+
+        # 1) Normalizar datos de Loyverse (estructura limpia)
+        v = normalize_receipt(r)
+
+        # 2) Sobre esa estructura FINAL, agregamos el estado de facturación
         receipt_id = v["receipt_id"]
         info = obtener_factura(receipt_id)
 
         if info:
-            # Marca real
             v["already_invoiced"] = True
-            # Devolver datos completos de la factura
             v["invoice"] = info
         else:
             v["already_invoiced"] = False
             v["invoice"] = None
+
+        # 3) Añadir al listado final
+        ventas.append(v)
 
     return ventas
 
