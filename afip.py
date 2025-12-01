@@ -4,19 +4,41 @@ import tempfile
 import base64
 import requests
 import ssl
+import json
 from datetime import datetime, timedelta, timezone
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.poolmanager import PoolManager
+from xml.etree import ElementTree as ET
+
+# ======================================================
+# CACHE WSAA (token/sign temporales)
+# ======================================================
+WSAA_CACHE = "/tmp/wsaa_token.json"
+
+
+def guardar_wsaa(token, sign):
+    try:
+        with open(WSAA_CACHE, "w") as f:
+            json.dump({"token": token, "sign": sign}, f)
+    except:
+        pass
+
+
+def cargar_wsaa():
+    if not os.path.exists(WSAA_CACHE):
+        return None, None
+    try:
+        with open(WSAA_CACHE, "r") as f:
+            data = json.load(f)
+            return data.get("token"), data.get("sign")
+    except:
+        return None, None
 
 
 # ======================================================
-# ADAPTADOR TLS (soluciona: SSL: DH_KEY_TOO_SMALL)
+# ADAPTADOR TLS (soluciona SSL: DH_KEY_TOO_SMALL)
 # ======================================================
 class TLSAdapter(HTTPAdapter):
-    """
-    Permite conectarse a servidores AFIP que usan DH inseguro.
-    Render/Ubuntu bloquea por defecto, así que bajamos SECLEVEL a 1.
-    """
     def init_poolmanager(self, connections, maxsize, block=False):
         ctx = ssl.create_default_context()
         ctx.set_ciphers("DEFAULT@SECLEVEL=1")
@@ -81,11 +103,10 @@ def generar_cms_der_b64(crt_path: str, key_path: str) -> str:
 
 
 # ======================================================
-# 2) LOGIN CMS DIRECTO (WSAA)
+# 2) LOGIN CMS (WSAA)
 # ======================================================
 def login_cms_directo(cms_b64: str):
     import html
-    from xml.etree import ElementTree as ET
 
     soap_body = f"""<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
@@ -108,9 +129,8 @@ def login_cms_directo(cms_b64: str):
     if r.status_code != 200:
         raise Exception(f"WSAA devolvió {r.status_code}: {r.text}")
 
-    # Buscar el nodo loginCmsReturn
-    from xml.etree import ElementTree as ET
     tree = ET.fromstring(r.text)
+
     nodo_return = None
     for elem in tree.iter():
         if elem.tag.endswith("loginCmsReturn"):
@@ -129,6 +149,7 @@ def login_cms_directo(cms_b64: str):
 
     token = None
     sign = None
+
     for elem in inner.iter():
         if elem.tag.endswith("token"):
             token = elem.text
@@ -136,7 +157,7 @@ def login_cms_directo(cms_b64: str):
             sign = elem.text
 
     if not token or not sign:
-        raise Exception("No se pudo extraer token/sign")
+        raise Exception("No se pudo extraer token/sign del WSAA")
 
     return token, sign
 
@@ -145,8 +166,6 @@ def login_cms_directo(cms_b64: str):
 # 3) WSFE – FECompUltimoAutorizado
 # ======================================================
 def wsfe_ultimo_comprobante(token: str, sign: str, cuit: int, pto_vta: int, tipo_cbte: int):
-    from xml.etree import ElementTree as ET
-
     wsfe_url = os.environ.get(
         "AFIP_WSFE_URL",
         "https://servicios1.afip.gov.ar/wsfev1/service.asmx"
@@ -202,7 +221,6 @@ def wsfe_ultimo_comprobante(token: str, sign: str, cuit: int, pto_vta: int, tipo
 # 4) WSFE – FECAESolicitar (FACTURAR)
 # ======================================================
 def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, total: float):
-    from xml.etree import ElementTree as ET
 
     key_path = "/etc/secrets/afip_new.key"
     crt_path = "/etc/secrets/afip_new.crt"
@@ -219,26 +237,46 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
 
     pto_vta = int(os.environ.get("AFIP_PTO_VTA", "1"))
 
-    wsfe_url = os.environ.get(
-        "AFIP_WSFE_URL",
-        "https://servicios1.afip.gov.ar/wsfev1/service.asmx"
-    )
+    # =========================================================
+    # 1) WSAA – usar TOKEN CACHEADO si está disponible
+    # =========================================================
+    token, sign = cargar_wsaa()
 
-    # Login
-    cms_b64 = generar_cms_der_b64(crt_path, key_path)
-    token, sign = login_cms_directo(cms_b64)
+    if not token or not sign:
+        cms_b64 = generar_cms_der_b64(crt_path, key_path)
+        token, sign = login_cms_directo(cms_b64)
+        guardar_wsaa(token, sign)
 
-    # Obtener último número
-    ultimo = wsfe_ultimo_comprobante(
-        token=token,
-        sign=sign,
-        cuit=cuit_int,
-        pto_vta=pto_vta,
-        tipo_cbte=tipo_cbte
-    )
+    # =========================================================
+    # 2) Obtener último comprobante
+    # =========================================================
+    try:
+        ultimo = wsfe_ultimo_comprobante(
+            token=token,
+            sign=sign,
+            cuit=cuit_int,
+            pto_vta=pto_vta,
+            tipo_cbte=tipo_cbte
+        )
+    except:
+        # TOKEN VENCIDO → RENOVAR
+        cms_b64 = generar_cms_der_b64(crt_path, key_path)
+        token, sign = login_cms_directo(cms_b64)
+        guardar_wsaa(token, sign)
+
+        ultimo = wsfe_ultimo_comprobante(
+            token=token,
+            sign=sign,
+            cuit=cuit_int,
+            pto_vta=pto_vta,
+            tipo_cbte=tipo_cbte
+        )
+
     cbte_nro = ultimo + 1
 
-    # Items XML
+    # =========================================================
+    # 3) XML Items
+    # =========================================================
     xml_items = ""
     for it in items:
         descripcion = it["descripcion"]
@@ -257,7 +295,14 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
         </ar:Item>
         """
 
-    # SOAP Body
+    # =========================================================
+    # 4) FECAESolicitar
+    # =========================================================
+    wsfe_url = os.environ.get(
+        "AFIP_WSFE_URL",
+        "https://servicios1.afip.gov.ar/wsfev1/service.asmx"
+    )
+
     soap_body = f"""<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
     xmlns:ar="http://ar.gov.afip.dif.FEV1/">
@@ -317,7 +362,6 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
     if r.status_code != 200:
         raise Exception(f"WSFE devolvió {r.status_code}: {r.text}")
 
-    # Parse respuesta
     tree = ET.fromstring(r.text)
 
     cae = None
