@@ -9,8 +9,9 @@ from afip import wsfe_facturar
 from pdf_afip import generar_pdf_factura_c
 
 from json_db import esta_facturada, registrar_factura, obtener_factura
-from google_drive_client import upload_pdf_to_drive  # Google Drive (OAuth2)
+from google_drive_client import upload_pdf_to_drive  # Google Drive OAuth2
 
+import traceback
 
 RAZON_SOCIAL = "JOAQUIN VEGLI"
 DOMICILIO = "ALSINA 155 LOC 15, BAHIA BLANCA, BUENOS AIRES. CP: 8000"
@@ -39,34 +40,23 @@ class FacturaRequest(BaseModel):
     total: float
 
 
-# ============================================================
-# CONSULTAR FACTURA EXISTENTE (para el frontend)
-# ============================================================
 @router.get("/factura/{receipt_id}")
 def obtener_factura_existente(receipt_id: str):
     data = obtener_factura(receipt_id)
     if not data:
         return {"exists": False}
-    return {
-        "exists": True,
-        "invoice": data,
-    }
+    return {"exists": True, "invoice": data}
 
 
-# ============================================================
-# GENERAR FACTURA C
-# ============================================================
 @router.post("/facturar")
 async def facturar(req: FacturaRequest):
 
-    # Anti doble facturación real
     if esta_facturada(req.receipt_id):
         raise HTTPException(
             status_code=400,
             detail=f"La venta {req.receipt_id} ya fue facturada anteriormente."
         )
 
-    # Modo seguro (tu regla original)
     if req.total > 100:
         raise HTTPException(
             status_code=400,
@@ -74,10 +64,10 @@ async def facturar(req: FacturaRequest):
         )
 
     try:
-        tipo_comprobante = 11  # Factura C
-        tipo_doc = 96          # DNI
+        tipo_comprobante = 11
+        tipo_doc = 96
 
-        # Procesar DNI
+        # DNI numérico
         doc_nro = 0
         if req.cliente and req.cliente.dni:
             try:
@@ -86,36 +76,42 @@ async def facturar(req: FacturaRequest):
                 doc_nro = 0
 
         # =====================================================
-        # 1) Llamar AFIP para obtener CAE
+        # 1) LLAMADA A AFIP  (ahora con DEBUG REAL)
         # =====================================================
-        result = wsfe_facturar(
-            tipo_cbte=tipo_comprobante,
-            doc_tipo=tipo_doc,
-            doc_nro=doc_nro,
-            items=[{
-                "descripcion": it.nombre,
-                "cantidad": it.cantidad,
-                "precio": it.precio_unitario,
-            } for it in req.items],
-            total=req.total,
-        )
+        try:
+            result = wsfe_facturar(
+                tipo_cbte=tipo_comprobante,
+                doc_tipo=tipo_doc,
+                doc_nro=doc_nro,
+                items=[{
+                    "descripcion": it.nombre,
+                    "cantidad": it.cantidad,
+                    "precio": it.precio_unitario,
+                } for it in req.items],
+                total=req.total,
+            )
+        except Exception as afip_error:
+            print("🔥 ERROR CRÍTICO AFIP:")
+            print("-------------------------------------------------")
+            print(traceback.format_exc())
+            print("-------------------------------------------------")
+            raise HTTPException(
+                status_code=500,
+                detail="AFIP explotó antes de devolver CAE. Revisar logs."
+            )
 
-        # ============================
-        # 🔥 DEBUG TEMPORAL IMPORTANTE
-        # ============================
         print("DEBUG AFIP RESULT:", result)
 
-        cae = result.get("cae", "")
-        venc = result.get("vencimiento", "")
-        cbte_nro = result.get("cbte_nro", None)
-        pto_vta = result.get("pto_vta", None)
+        cae = result.get("cae")
+        venc = result.get("vencimiento")
+        cbte_nro = result.get("cbte_nro")
+        pto_vta = result.get("pto_vta")
 
         if not cae:
-            # AFIP respondió pero SIN CAE (rechazo)
             raise Exception("La AFIP no devolvió CAE. Error en la factura.")
 
         # =====================================================
-        # 2) Generar PDF local
+        # 2) PDF local
         # =====================================================
         fecha_hoy = datetime.now().strftime("%d/%m/%Y")
         pdf_path = generar_pdf_factura_c(
@@ -138,14 +134,11 @@ async def facturar(req: FacturaRequest):
         )
 
         # =====================================================
-        # 3) Subir PDF a Google Drive
+        # 3) Google Drive
         # =====================================================
         pdf_filename = f"Factura_{cbte_nro}.pdf"
         drive_id, drive_url = upload_pdf_to_drive(pdf_path, pdf_filename)
 
-        # =====================================================
-        # 4) Guardar factura en facturas_db.json
-        # =====================================================
         factura_data = {
             "cbte_nro": cbte_nro,
             "pto_vta": pto_vta,
@@ -153,12 +146,13 @@ async def facturar(req: FacturaRequest):
             "vencimiento": venc,
             "fecha": fecha_hoy,
             "drive_id": drive_id,
-            "drive_url": drive_url
+            "drive_url": drive_url,
         }
+
         registrar_factura(req.receipt_id, factura_data)
 
         # =====================================================
-        # 5) Leer PDF local → base64 (para mostrarlo inmediato)
+        # 5) PDF base64
         # =====================================================
         with open(pdf_path, "rb") as f:
             pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
