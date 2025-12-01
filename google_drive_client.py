@@ -17,8 +17,6 @@ def get_drive_service():
     - GOOGLE_CLIENT_ID
     - GOOGLE_CLIENT_SECRET
     - GOOGLE_REFRESH_TOKEN
-
-    Esto permite subir y descargar archivos del Drive PERSONAL del usuario.
     """
 
     client_id = os.environ.get("GOOGLE_CLIENT_ID")
@@ -44,13 +42,9 @@ def get_drive_service():
 
 
 # ============================================================
-# 1) SUBIR PDF (lo que ya tenías) — SIN CAMBIOS
+# 1) SUBIR PDF (sin cambios)
 # ============================================================
 def upload_pdf_to_drive(local_pdf_path: str, pdf_name: str) -> Tuple[str, str]:
-    """
-    Sube un PDF usando OAuth2 a la carpeta especificada.
-    Devuelve (file_id, public_url)
-    """
 
     folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID")
     if not folder_id:
@@ -58,7 +52,6 @@ def upload_pdf_to_drive(local_pdf_path: str, pdf_name: str) -> Tuple[str, str]:
 
     service = get_drive_service()
 
-    # Metadatos del archivo
     file_metadata = {
         "name": pdf_name,
         "parents": [folder_id],
@@ -66,7 +59,6 @@ def upload_pdf_to_drive(local_pdf_path: str, pdf_name: str) -> Tuple[str, str]:
 
     media = MediaFileUpload(local_pdf_path, mimetype="application/pdf")
 
-    # Crear archivo en Drive
     created = (
         service.files()
         .create(body=file_metadata, media_body=media, fields="id")
@@ -75,7 +67,6 @@ def upload_pdf_to_drive(local_pdf_path: str, pdf_name: str) -> Tuple[str, str]:
 
     file_id = created.get("id")
 
-    # Hacerlo público por link
     service.permissions().create(
         fileId=file_id,
         body={"type": "anyone", "role": "reader"},
@@ -88,25 +79,19 @@ def upload_pdf_to_drive(local_pdf_path: str, pdf_name: str) -> Tuple[str, str]:
 
 
 # ============================================================
-# 2) HELPERS PARA facturas_db.json
+# 2) BUSCAR EL ID DEL JSON EN DRIVE
 # ============================================================
 def _get_facturas_db_file_id(service) -> str | None:
-    """
-    Obtiene el ID del archivo facturas_db.json en Drive.
 
-    Prioridad:
-    1) FACTURAS_DB_FILE_ID (env var)
-    2) Buscar por nombre 'facturas_db.json' dentro de GOOGLE_DRIVE_FOLDER_ID
-    """
     env_id = os.environ.get("FACTURAS_DB_FILE_ID")
     if env_id:
+        env_id = env_id.strip()   # ← eliminar espacios / saltos invisibles
+        print("DEBUG → FACTURAS_DB_FILE_ID desde ENV =", repr(env_id))
         return env_id
 
     folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID")
-    if not folder_id:
-        raise RuntimeError("Falta GOOGLE_DRIVE_FOLDER_ID en variables de entorno")
+    folder_id = folder_id.strip()
 
-    # Buscar el archivo por nombre dentro de la carpeta
     query = (
         f"name = 'facturas_db.json' and "
         f"'{folder_id}' in parents and "
@@ -126,39 +111,35 @@ def _get_facturas_db_file_id(service) -> str | None:
 
     files = results.get("files", [])
     if files:
+        print("DEBUG → Encontrado facturas_db.json en Drive con ID =", files[0]["id"])
         return files[0]["id"]
 
+    print("DEBUG → NO se encontró facturas_db.json en Drive")
     return None
 
 
 # ============================================================
-# 3) DESCARGAR facturas_db.json DESDE DRIVE
+# 3) DESCARGAR JSON
 # ============================================================
 def download_facturas_db(local_path: str = "facturas_db.json") -> Dict[str, Any]:
-    """
-    Descarga facturas_db.json desde Google Drive y lo guarda en local_path.
-    Devuelve el dict cargado desde el JSON.
 
-    Si el archivo no existe en Drive, crea uno vacío ({}) en Drive
-    y también localmente.
-    """
     service = get_drive_service()
 
-    folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID")
+    folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "").strip()
     if not folder_id:
-        raise RuntimeError("Falta GOOGLE_DRIVE_FOLDER_ID en variables de entorno")
+        raise RuntimeError("Falta GOOGLE_DRIVE_FOLDER_ID")
 
     file_id = _get_facturas_db_file_id(service)
+    print("DEBUG → Descargando JSON con file_id =", repr(file_id))
 
-    # Si no existe en Drive, lo creamos con contenido vacío {}
+    # NO EXISTE → crear nuevo
     if not file_id:
-        # Crear archivo vacío en local
-        data: Dict[str, Any] = {}
+        print("DEBUG → Creando facturas_db.json vacío en Drive")
+        data = {}
         with open(local_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
         media = MediaFileUpload(local_path, mimetype="application/json")
-
         file_metadata = {
             "name": "facturas_db.json",
             "parents": [folder_id],
@@ -170,74 +151,76 @@ def download_facturas_db(local_path: str = "facturas_db.json") -> Dict[str, Any]
             .execute()
         )
 
-        # NOTA: aunque obtengamos el nuevo ID, no podemos setear la env var desde el código.
-        # En próximas ejecuciones, si FACTURAS_DB_FILE_ID no está, se buscará por nombre.
-        file_id = created.get("id")
+        print("DEBUG → Nuevo ID creado =", created.get("id"))
         return data
 
-    # Si existe en Drive, lo descargamos
-    request = service.files().get_media(fileId=file_id)
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-
-    fh.seek(0)
-
+    # EXISTE → descargar
     try:
-        text = fh.read().decode("utf-8")
-        data = json.loads(text or "{}")
-    except Exception:
-        data = {}
+        request = service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
 
-    # Guardar también en disco local
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
+        fh.seek(0)
+        data = json.loads(fh.read().decode("utf-8") or "{}")
+    except Exception as e:
+        print("⚠️ Error descargando facturas_db.json desde Drive:", e)
+        return {}
+
+    # guardar también en disco
     try:
         with open(local_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception:
-        # Si falla el guardado local, igual devolvemos el dict
+    except:
         pass
 
     return data
 
 
 # ============================================================
-# 4) SUBIR facturas_db.json A DRIVE
+# 4) SUBIR JSON
 # ============================================================
 def upload_facturas_db(local_path: str = "facturas_db.json") -> None:
-    """
-    Sube el archivo local facturas_db.json a Google Drive.
 
-    - Si FACTURAS_DB_FILE_ID existe o se encuentra el archivo por nombre:
-        → se hace un update sobre ese archivo.
-    - Si no existe:
-        → se crea uno nuevo dentro de GOOGLE_DRIVE_FOLDER_ID.
-    """
     if not os.path.exists(local_path):
-        # Nada que subir
+        print("DEBUG → No existe facturas_db.json local para subir")
         return
 
     service = get_drive_service()
 
-    folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID")
+    folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "").strip()
     if not folder_id:
-        raise RuntimeError("Falta GOOGLE_DRIVE_FOLDER_ID en variables de entorno")
+        raise RuntimeError("Falta GOOGLE_DRIVE_FOLDER_ID")
 
     file_id = _get_facturas_db_file_id(service)
+    print("DEBUG → Subiendo JSON con file_id =", repr(file_id))
 
     media = MediaFileUpload(local_path, mimetype="application/json")
 
+    # UPDATE EXISTENTE
     if file_id:
-        # Actualizar archivo existente
-        service.files().update(fileId=file_id, media_body=media).execute()
-    else:
-        # Crear nuevo archivo en la carpeta
-        file_metadata = {
-            "name": "facturas_db.json",
-            "parents": [folder_id],
-        }
-        service.files().create(
-            body=file_metadata, media_body=media, fields="id"
-        ).execute()
+        try:
+            service.files().update(fileId=file_id, media_body=media).execute()
+            print("DEBUG → JSON actualizado correctamente en Drive")
+        except Exception as e:
+            print("⚠️ Error subiendo facturas_db.json a Drive:", e)
+        return
+
+    # NO EXISTE → crear nuevo
+    file_metadata = {
+        "name": "facturas_db.json",
+        "parents": [folder_id],
+    }
+
+    try:
+        created = (
+            service.files()
+            .create(body=file_metadata, media_body=media, fields="id")
+            .execute()
+        )
+        print("DEBUG → JSON creado nuevo en Drive con ID =", created.get("id"))
+    except Exception as e:
+        print("⚠️ Error creando nuevo facturas_db.json en Drive:", e)
