@@ -360,11 +360,9 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
     r = session.post(wsfe_url, data=soap_body.encode("utf-8"), headers=headers, timeout=20)
 
     if r.status_code != 200:
-        raise Exception(f"WSFE devolvió {r.status_code}: {r.text}")
+        raise Exception(f"WSFE devolvió {r.statuscode}: {r.text}")
 
-    tree = ET.fromstring(r.text)
-
-        # Parse respuesta
+    # Parse respuesta
     tree = ET.fromstring(r.text)
 
     cae = None
@@ -382,6 +380,12 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
         if elem.tag.endswith("ErrMsg"):
             errores.append(elem.text)
 
+    # -------------------------
+    # FIX: NORMALIZAR LISTAS
+    # -------------------------
+    errores = [str(e) for e in errores if e]
+    obs = [str(o) for o in obs if o]
+
     # Si AFIP NO devolvió CAE → mostrar motivo real
     if not cae:
         msg = "La AFIP rechazó la factura.\n"
@@ -395,14 +399,6 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
         msg += "\nRespuesta completa AFIP:\n" + r.text[:2000]
 
         raise Exception(msg)
-
-    return {
-        "cae": cae,
-        "vencimiento": vto,
-        "cbte_nro": cbte_nro,
-        "pto_vta": pto_vta
-    }
-
 
     return {
         "cae": cae,
