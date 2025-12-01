@@ -364,17 +364,45 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
 
     tree = ET.fromstring(r.text)
 
+        # Parse respuesta
+    tree = ET.fromstring(r.text)
+
     cae = None
     vto = None
+    errores = []
+    obs = []
 
     for elem in tree.iter():
         if elem.tag.endswith("CAE"):
             cae = elem.text
         if elem.tag.endswith("CAEFchVto"):
             vto = elem.text
+        if elem.tag.endswith("Obs"):
+            obs.append(elem.text)
+        if elem.tag.endswith("ErrMsg"):
+            errores.append(elem.text)
 
+    # Si AFIP NO devolvió CAE → mostrar motivo real
     if not cae:
-        raise Exception("La AFIP no devolvió CAE. Error en la factura.")
+        msg = "La AFIP rechazó la factura.\n"
+
+        if errores:
+            msg += "Errores: " + " | ".join(errores) + "\n"
+
+        if obs:
+            msg += "Observaciones: " + " | ".join(obs) + "\n"
+
+        msg += "\nRespuesta completa AFIP:\n" + r.text[:2000]
+
+        raise Exception(msg)
+
+    return {
+        "cae": cae,
+        "vencimiento": vto,
+        "cbte_nro": cbte_nro,
+        "pto_vta": pto_vta
+    }
+
 
     return {
         "cae": cae,
