@@ -9,7 +9,7 @@ from afip import wsfe_facturar
 from pdf_afip import generar_pdf_factura_c
 
 from json_db import esta_facturada, registrar_factura, obtener_factura
-from google_drive_client import upload_pdf_to_drive  # OAuth2 Drive
+from google_drive_client import upload_pdf_to_drive  # OAuth2 Google Drive
 
 
 RAZON_SOCIAL = "JOAQUIN VEGLI"
@@ -39,6 +39,9 @@ class FacturaRequest(BaseModel):
     total: float
 
 
+# ============================================================
+#  CONSULTAR FACTURA EXISTENTE
+# ============================================================
 @router.get("/factura/{receipt_id}")
 def obtener_factura_existente(receipt_id: str):
     data = obtener_factura(receipt_id)
@@ -47,10 +50,13 @@ def obtener_factura_existente(receipt_id: str):
     return {"exists": True, "invoice": data}
 
 
+# ============================================================
+#  EMITIR FACTURA
+# ============================================================
 @router.post("/facturar")
 async def facturar(req: FacturaRequest):
 
-    # Anti doble facturación
+    # Evitar facturar dos veces
     if esta_facturada(req.receipt_id):
         raise HTTPException(
             status_code=400,
@@ -67,20 +73,25 @@ async def facturar(req: FacturaRequest):
     try:
         tipo_comprobante = 11  # FACTURA C
 
-        # ===========================================
-        #  FIX: Limpieza + selección correcta de doc
-        # ===========================================
-        dni_raw = (req.cliente.dni or "").strip()
-
-        if dni_raw.isdigit() and len(dni_raw) >= 7:
-            tipo_doc = 96     # DNI
-            doc_nro = int(dni_raw)
+        # ====================================================
+        # FIX MÍNIMO — TIPO DOC SEGÚN SI HAY DNI O NO
+        # ====================================================
+        if req.cliente and req.cliente.dni:
+            # Cliente con DNI
+            tipo_doc = 96  # DNI
+            try:
+                doc_nro = int(req.cliente.dni)
+            except:
+                doc_nro = 0
         else:
-            tipo_doc = 99     # Consumidor Final
+            # Consumidor Final
+            tipo_doc = 99  # Consumidor Final
             doc_nro = 0
-        # ===========================================
+        # ====================================================
 
-        # AFIP
+        # ====================================================
+        # 1) Llamada AFIP
+        # ====================================================
         result = wsfe_facturar(
             tipo_cbte=tipo_comprobante,
             doc_tipo=tipo_doc,
@@ -98,7 +109,9 @@ async def facturar(req: FacturaRequest):
         cbte_nro = result["cbte_nro"]
         pto_vta = result["pto_vta"]
 
-        # Generar PDF local
+        # ====================================================
+        # 2) Generar PDF local
+        # ====================================================
         fecha_hoy = datetime.now().strftime("%d/%m/%Y")
 
         pdf_path = generar_pdf_factura_c(
@@ -111,7 +124,7 @@ async def facturar(req: FacturaRequest):
             cae=cae,
             cae_vto=venc,
             cliente_nombre=req.cliente.name,
-            cliente_dni=dni_raw if dni_raw else "",
+            cliente_dni=req.cliente.dni if req.cliente.dni else "",
             items=[{
                 "descripcion": it.nombre,
                 "cantidad": it.cantidad,
@@ -120,10 +133,15 @@ async def facturar(req: FacturaRequest):
             total=req.total,
         )
 
-        # Subir PDF a Drive
+        # ====================================================
+        # 3) Subir a Google Drive
+        # ====================================================
         pdf_filename = f"Factura_{cbte_nro}.pdf"
         drive_id, drive_url = upload_pdf_to_drive(pdf_path, pdf_filename)
 
+        # ====================================================
+        # 4) Guardar registro en JSON
+        # ====================================================
         factura_data = {
             "cbte_nro": cbte_nro,
             "pto_vta": pto_vta,
@@ -136,10 +154,15 @@ async def facturar(req: FacturaRequest):
 
         registrar_factura(req.receipt_id, factura_data)
 
-        # base64 para abrir en nueva pestaña
+        # ====================================================
+        # 5) PDF base64 para abrir en el navegador
+        # ====================================================
         with open(pdf_path, "rb") as f:
             pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
 
+        # ====================================================
+        # 6) Respuesta final
+        # ====================================================
         return {
             "status": "ok",
             "receipt_id": req.receipt_id,
@@ -152,4 +175,5 @@ async def facturar(req: FacturaRequest):
         }
 
     except Exception as e:
+        # Error crudo solamente, sin debug extra
         raise HTTPException(status_code=500, detail=str(e))
