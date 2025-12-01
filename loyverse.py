@@ -19,7 +19,7 @@ async def get_receipts_between(desde, hasta):
     created_at_min = desde.strftime("%Y-%m-%dT00:00:00.000Z")
     created_at_max = hasta.strftime("%Y-%m-%dT23:59:59.999Z")
 
-    # 🔥 FIX: expand=customer para que incluya el customer_id
+    # expand=customer asegura customer_id
     url = (
         f"{BASE_URL}/receipts?"
         f"limit=250"
@@ -41,7 +41,7 @@ async def get_receipts_between(desde, hasta):
 
 
 # ============================================
-# NUEVO — OBTENER DATOS DEL CLIENTE
+# OBTENER DATOS DEL CLIENTE
 # ============================================
 async def get_customer(customer_id: str):
     headers = {"Authorization": f"Bearer {TOKEN}"}
@@ -60,7 +60,7 @@ async def get_customer(customer_id: str):
 
 
 # ============================================
-# NORMALIZADOR
+# NORMALIZADOR DE RECIBOS
 # ============================================
 def normalize_receipt(r: dict) -> dict:
     return {
@@ -70,9 +70,10 @@ def normalize_receipt(r: dict) -> dict:
         "total": r.get("total_money"),
         "descuento_total": r.get("total_discount", 0),
 
-        # 🔥 ACÁ AHORA SÍ FUNCIONA
+        # cliente (si existe)
         "cliente_id": r.get("customer_id"),
 
+        # items
         "items": [
             {
                 "nombre": item.get("item_name"),
@@ -83,6 +84,7 @@ def normalize_receipt(r: dict) -> dict:
             for item in r.get("line_items", [])
         ],
 
+        # pagos
         "pagos": [
             {
                 "tipo": p.get("type"),
@@ -91,6 +93,7 @@ def normalize_receipt(r: dict) -> dict:
             }
             for p in r.get("payments", [])
         ],
-
-        "already_invoiced": False,
+        
+        # ❌ YA NO DEVUELVE "already_invoiced"
+        # ese valor se añade en loyverse_api.py
     }
