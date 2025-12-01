@@ -9,7 +9,7 @@ from afip import wsfe_facturar
 from pdf_afip import generar_pdf_factura_c
 
 from json_db import esta_facturada, registrar_factura, obtener_factura
-from google_drive_client import upload_pdf_to_drive  # OAuth2 Google Drive
+from google_drive_client import upload_pdf_to_drive  # OAuth2 Drive
 
 
 RAZON_SOCIAL = "JOAQUIN VEGLI"
@@ -74,7 +74,7 @@ async def facturar(req: FacturaRequest):
         tipo_comprobante = 11  # FACTURA C
 
         # ====================================================
-        # FIX MÍNIMO — TIPO DOC SEGÚN SI HAY DNI O NO
+        #  FIX MÍNIMO — TIPO DOC SEGÚN SI HAY DNI O NO
         # ====================================================
         if req.cliente and req.cliente.dni:
             # Cliente con DNI
@@ -175,5 +175,13 @@ async def facturar(req: FacturaRequest):
         }
 
     except Exception as e:
-        # Error crudo solamente, sin debug extra
-        raise HTTPException(status_code=500, detail=str(e))
+        # ====================================================
+        # 🔥 DEBUG REAL DE AFIP — MOSTRAR ERROR COMPLETO
+        # ====================================================
+        import traceback
+        error_text = traceback.format_exc()
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"ERROR_WSFE: {str(e)}\n--- TRACEBACK ---\n{error_text}"
+        )
