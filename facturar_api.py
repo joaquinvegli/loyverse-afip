@@ -66,20 +66,14 @@ async def facturar(req: FacturaRequest):
             detail=f"La venta {req.receipt_id} ya fue facturada anteriormente."
         )
 
-    # 1) Modo seguro
-    if req.total > 100:
-        raise HTTPException(
-            status_code=400,
-            detail="El total supera $100. Sistema en modo seguro."
-        )
+    # 🔥 ELIMINADO: límite de $100
+    # Ya no existe el modo seguro
 
     try:
         tipo_comprobante = 11  # FACTURA C
 
         # =====================================================
         # 1) Determinar tipo y número de documento
-        #    - Si hay DNI válido: DocTipo=96 (DNI), DocNro > 0
-        #    - Si NO hay DNI:     DocTipo=99 (Consumidor Final), DocNro=0
         # =====================================================
         doc_nro = 0
         tipo_doc = 99  # default: Consumidor Final
@@ -91,7 +85,6 @@ async def facturar(req: FacturaRequest):
                     tipo_doc = 96  # DNI
                     doc_nro = posible_dni
             except:
-                # Si no se puede convertir, se deja como Consumidor Final
                 tipo_doc = 99
                 doc_nro = 0
 
@@ -134,11 +127,11 @@ async def facturar(req: FacturaRequest):
             total=req.total,
         )
 
-        # 4) Subir a Google Drive (OAuth)
+        # 4) Subir a Google Drive
         pdf_filename = f"Factura_{cbte_nro}.pdf"
         drive_id, drive_url = upload_pdf_to_drive(pdf_path, pdf_filename)
 
-        # 5) Guardar en facturas_db.json
+        # 5) Guardar factura
         factura_data = {
             "cbte_nro": cbte_nro,
             "pto_vta": pto_vta,
@@ -150,7 +143,7 @@ async def facturar(req: FacturaRequest):
         }
         registrar_factura(req.receipt_id, factura_data)
 
-        # 6) Leer PDF local → base64 (solo para vista rápida)
+        # 6) PDF en base64 para vista rápida
         with open(pdf_path, "rb") as f:
             pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
 
@@ -167,5 +160,4 @@ async def facturar(req: FacturaRequest):
         }
 
     except Exception as e:
-        # Dejamos el detalle completo para poder ver lo que devuelve AFIP
         raise HTTPException(status_code=500, detail=str(e))
