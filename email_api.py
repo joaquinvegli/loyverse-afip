@@ -1,117 +1,85 @@
-# email_api.py
+# email_api.py (BREVO API)
+import os
 import base64
 import httpx
-import os
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from json_db import obtener_factura, listado_facturas
+from json_db import obtener_factura
 
 router = APIRouter(prefix="/api", tags=["email"])
 
-# ===========================
-# MODELO
-# ===========================
+
 class EmailRequest(BaseModel):
     receipt_id: str
     email: str
 
 
-# ===========================
-# LISTAR FACTURAS
-# ===========================
-@router.get("/facturas")
-def api_listar_facturas():
-    return {"facturas": listado_facturas()}
-
-
-# ===========================
-# ENVIAR EMAIL (BREVO API)
-# ===========================
 @router.post("/enviar_email")
 def api_enviar_email(req: EmailRequest):
 
-    # ----------------------------------------
-    # 1) Buscar factura
-    # ----------------------------------------
+    # ---------------------------
+    # 1) obtener factura del JSON
+    # ---------------------------
     factura = obtener_factura(req.receipt_id)
     if not factura:
-        raise HTTPException(
-            404,
-            f"No existe factura registrada para receipt_id {req.receipt_id}"
-        )
+        raise HTTPException(404, "Factura no encontrada en la base de datos.")
 
     drive_url = factura.get("drive_url")
     if not drive_url:
-        raise HTTPException(400, "Factura sin drive_url")
+        raise HTTPException(400, "La factura no tiene URL de Google Drive.")
 
-    # ----------------------------------------
-    # 2) Descargar PDF desde Drive
-    # ----------------------------------------
+    # ---------------------------
+    # 2) descargar PDF desde Drive
+    # ---------------------------
     try:
-        r = httpx.get(drive_url, timeout=30)
+        r = httpx.get(drive_url)
         r.raise_for_status()
         pdf_bytes = r.content
     except Exception as e:
-        raise HTTPException(500, f"No se pudo descargar PDF: {e}")
+        raise HTTPException(500, f"No se pudo descargar el PDF: {e}")
 
     pdf_b64 = base64.b64encode(pdf_bytes).decode()
 
-    # ----------------------------------------
-    # 3) API Key de Brevo
-    # ----------------------------------------
-    API_KEY = os.environ.get("BREVO_API_KEY")
-    if not API_KEY:
-        raise HTTPException(500, "Falta BREVO_API_KEY en environment variables")
+    # ---------------------------
+    # 3) enviar con BREVO API
+    # ---------------------------
+    BREVO_API_KEY = os.environ.get("BREVO_API_KEY")
+    if not BREVO_API_KEY:
+        raise HTTPException(500, "BREVO_API_KEY no está configurada en Render.")
 
-    headers = {
-        "accept": "application/json",
-        "api-key": API_KEY,
-        "content-type": "application/json",
-    }
+    # remitente -> tu Gmail verificado dentro de Brevo
+    FROM_EMAIL = "topfundasbb@gmail.com"
 
-    # ----------------------------------------
-    # 4) Payload
-    # ----------------------------------------
     payload = {
-        "sender": {
-            "name": "Top Fundas",
-            "email": "topfundasbb@gmail.com"
-        },
+        "sender": {"name": "Top Fundas", "email": FROM_EMAIL},
         "to": [{"email": req.email}],
-        "subject": "Factura de compra - Top Fundas",
+        "subject": f"Factura de compra - Top Fundas",
         "htmlContent": """
-            <p>¡Gracias por tu compra en <strong>Top Fundas</strong>!</p>
-            <p>Adjuntamos tu factura.</p>
-            <p>Saludos,<br>Top Fundas</p>
+            <p>Hola! 👋</p>
+            <p>Te enviamos la factura correspondiente a tu compra en <strong>Top Fundas</strong>.</p>
+            <p>Muchas gracias por elegirnos</p>
         """,
         "attachment": [
             {
-                "content": pdf_b64,
-                "name": f"Factura_{factura['cbte_nro']}.pdf"
+                "name": f"Factura_{factura['cbte_nro']}.pdf",
+                "content": pdf_b64
             }
-        ]
+        ],
     }
 
-    # ----------------------------------------
-    # 5) Enviar email via API
-    # ----------------------------------------
     try:
-        response = httpx.post(
+        r = httpx.post(
             "https://api.brevo.com/v3/smtp/email",
-            headers=headers,
+            headers={
+                "api-key": BREVO_API_KEY,
+                "Content-Type": "application/json"
+            },
             json=payload,
-            timeout=30
+            timeout=20
         )
-        response.raise_for_status()
+        r.raise_for_status()
     except Exception as e:
-        raise HTTPException(
-            500,
-            detail=f"Error enviando email con Brevo: {e}"
-        )
+        raise HTTPException(500, f"Error enviando email vía Brevo: {e}")
 
-    return {
-        "status": "ok",
-        "message": f"Email enviado correctamente a {req.email}",
-        "brevo_response": response.json()
-    }
+    return {"status": "ok", "message": f"Email enviado a {req.email}"}
