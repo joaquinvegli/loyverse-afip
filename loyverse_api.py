@@ -1,6 +1,7 @@
 # loyverse_api.py
-from datetime import date
-from typing import List
+from datetime import date, datetime
+from typing import List, Dict
+from collections import defaultdict
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
@@ -11,113 +12,132 @@ from loyverse import (
     get_customer,
 )
 
-# 🔥 IMPORTANTE: consultar información de facturas
-from json_db import esta_facturada, obtener_factura
+from json_db import obtener_factura
 
 router = APIRouter(prefix="/api", tags=["ventas"])
 
 
-# ============================================
-# Función para limpiar el DNI (solo números)
-# ============================================
-def limpiar_dni(valor: str):
-    if not valor:
-        return None
-
-    solo_numeros = "".join(c for c in valor if c.isdigit())
-    return solo_numeros if solo_numeros else None
+# ============================
+# UTILIDADES
+# ============================
+def parse_fecha(fecha_str: str) -> datetime:
+    return datetime.fromisoformat(fecha_str.replace("Z", "+00:00"))
 
 
-# ============================================
-# LISTAR VENTAS ENTRE FECHAS
-# ============================================
+# ============================
+# LISTAR VENTAS + REEMBOLSOS
+# ============================
 @router.get("/ventas")
 async def listar_ventas(
-    desde: date = Query(..., description="Fecha desde (YYYY-MM-DD)"),
-    hasta: date = Query(..., description="Fecha hasta (YYYY-MM-DD)"),
+    desde: date = Query(...),
+    hasta: date = Query(...),
 ):
     receipts_raw = await get_receipts_between(desde, hasta)
 
-    if isinstance(receipts_raw, dict) and "error" in receipts_raw:
-        return JSONResponse(status_code=400, content=receipts_raw)
-
     if not isinstance(receipts_raw, list):
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "Formato inesperado recibido desde Loyverse",
-                "type": str(type(receipts_raw)),
-                "data": receipts_raw,
-            },
-        )
+        return JSONResponse(status_code=500, content={"error": "Respuesta inválida de Loyverse"})
 
-    ventas = []
+    sales = []
+    refunds = []
 
     for r in receipts_raw:
+        if r.get("receipt_type") == "SALE":
+            sales.append(normalize_receipt(r))
+        elif r.get("receipt_type") == "REFUND":
+            refunds.append(normalize_receipt(r))
 
-        # 1) Normalizar datos de Loyverse (estructura limpia)
-        v = normalize_receipt(r)
+    # ============================
+    # INDEXAR REEMBOLSOS POR PRODUCTO
+    # ============================
+    refunds_by_product = defaultdict(list)
 
-        # 2) Sobre esa estructura FINAL, agregamos el estado de facturación
-        receipt_id = v["receipt_id"]
-        info = obtener_factura(receipt_id)
+    for refund in refunds:
+        for item in refund["items"]:
+            refunds_by_product[item["nombre"]].append(refund)
 
-        if info:
-            v["already_invoiced"] = True
-            v["invoice"] = info
+    # ============================
+    # PROCESAR VENTAS
+    # ============================
+    resultado = []
+
+    for sale in sales:
+        sale_date = parse_fecha(sale["fecha"])
+        total_refund = 0
+        refunded_items = []
+
+        remaining_items = []
+
+        for item in sale["items"]:
+            qty_left = item["cantidad"]
+            unit_price = item["precio_unitario"]
+
+            posibles = refunds_by_product.get(item["nombre"], [])
+
+            for ref in posibles:
+                ref_date = parse_fecha(ref["fecha"])
+                if ref_date <= sale_date:
+                    continue
+
+                for ref_item in ref["items"]:
+                    if ref_item["nombre"] != item["nombre"]:
+                        continue
+
+                    ref_qty = min(qty_left, ref_item["cantidad"])
+                    if ref_qty <= 0:
+                        continue
+
+                    importe = ref_qty * unit_price
+                    total_refund += importe
+                    qty_left -= ref_qty
+
+                    refunded_items.append({
+                        "nombre": item["nombre"],
+                        "cantidad": ref_qty,
+                        "importe": importe,
+                        "refund_receipt": ref["receipt_id"]
+                    })
+
+            if qty_left > 0:
+                remaining_items.append({
+                    "nombre": item["nombre"],
+                    "cantidad": qty_left,
+                    "precio_unitario": unit_price,
+                })
+
+        max_facturable = round(sale["total"] - total_refund, 2)
+
+        if total_refund == 0:
+            refund_status = "NONE"
+        elif max_facturable == 0:
+            refund_status = "TOTAL"
         else:
-            v["already_invoiced"] = False
-            v["invoice"] = None
+            refund_status = "PARTIAL"
 
-        # 3) Añadir al listado final
-        ventas.append(v)
+        factura = obtener_factura(sale["receipt_id"])
 
-    return ventas
+        sale.update({
+            "refunded_amount": total_refund,
+            "max_facturable": max_facturable,
+            "refund_status": refund_status,
+            "items_facturables": remaining_items,
+            "already_invoiced": factura is not None,
+            "invoice": factura,
+        })
 
+        resultado.append(sale)
 
-# ============================================
-# OBTENER DATOS DE UN CLIENTE (con DNI limpio)
-# ============================================
-@router.get("/clientes/{customer_id}")
-async def obtener_cliente(customer_id: str):
-    data = await get_customer(customer_id)
+    # ============================
+    # AGREGAR REEMBOLSOS COMO TARJETAS
+    # ============================
+    for ref in refunds:
+        ref.update({
+            "refund_status": "REFUND",
+            "already_invoiced": False,
+            "invoice": None,
+        })
+        resultado.append(ref)
 
-    if data is None:
-        return {
-            "exists": False,
-            "id": customer_id,
-            "name": None,
-            "email": None,
-            "phone": None,
-            "dni": None,
-        }
+    # Ordenar por fecha DESC
+    resultado.sort(key=lambda x: x["fecha"], reverse=True)
 
-    dni_limpio = limpiar_dni(data.get("note"))
-
-    return {
-        "exists": True,
-        "id": data.get("id"),
-        "name": data.get("name"),
-        "email": data.get("email"),
-        "phone": data.get("phone_number"),
-        "dni": dni_limpio,
-    }
-
-
-# ============================================
-# DEBUG: Ver venta cruda
-# ============================================
-@router.get("/debug/venta/{receipt_id}")
-async def debug_venta(receipt_id: str):
-    from datetime import date, timedelta
-
-    desde = date.today() - timedelta(days=365)
-    hasta = date.today() + timedelta(days=1)
-
-    receipts = await get_receipts_between(desde, hasta)
-
-    for r in receipts:
-        if r.get("receipt_number") == receipt_id:
-            return r
-
-    return {"error": "No se encontró ese recibo"}
+    return resultado
