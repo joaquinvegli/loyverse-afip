@@ -1,6 +1,6 @@
 # loyverse_api.py
 from datetime import date, datetime
-from typing import List, Dict
+from typing import Dict
 from collections import defaultdict
 
 from fastapi import APIRouter, Query
@@ -35,51 +35,60 @@ async def listar_ventas(
     receipts_raw = await get_receipts_between(desde, hasta)
 
     if not isinstance(receipts_raw, list):
-        return JSONResponse(status_code=500, content={"error": "Respuesta inválida de Loyverse"})
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Respuesta inválida de Loyverse"},
+        )
 
     sales = []
     refunds = []
 
     for r in receipts_raw:
-        if r.get("receipt_type") == "SALE":
+        rt = r.get("receipt_type")
+        if rt == "SALE":
             sales.append(normalize_receipt(r))
-        elif r.get("receipt_type") == "REFUND":
+        elif rt == "REFUND":
             refunds.append(normalize_receipt(r))
 
-    # ============================
-    # INDEXAR REEMBOLSOS POR PRODUCTO
-    # ============================
-    refunds_by_product = defaultdict(list)
+    # =================================================
+    # INDEXAR REEMBOLSOS (y marcar si ya fueron usados)
+    # =================================================
+    refund_pool = []
+    for ref in refunds:
+        ref["_used"] = False
+        refund_pool.append(ref)
 
-    for refund in refunds:
-        for item in refund["items"]:
-            refunds_by_product[item["nombre"]].append(refund)
-
-    # ============================
-    # PROCESAR VENTAS
-    # ============================
     resultado = []
 
+    # =================================================
+    # PROCESAR VENTAS
+    # =================================================
     for sale in sales:
         sale_date = parse_fecha(sale["fecha"])
-        total_refund = 0
-        refunded_items = []
 
+        refunded_amount = 0.0
+        refunded_items = []
         remaining_items = []
+
+        applied_refunds = []
 
         for item in sale["items"]:
             qty_left = item["cantidad"]
             unit_price = item["precio_unitario"]
 
-            posibles = refunds_by_product.get(item["nombre"], [])
+            for ref in refund_pool:
+                if ref["_used"]:
+                    continue
 
-            for ref in posibles:
                 ref_date = parse_fecha(ref["fecha"])
                 if ref_date <= sale_date:
                     continue
 
                 for ref_item in ref["items"]:
-                    if ref_item["nombre"] != item["nombre"]:
+                    if (
+                        ref_item["nombre"] != item["nombre"]
+                        or ref_item["precio_unitario"] != unit_price
+                    ):
                         continue
 
                     ref_qty = min(qty_left, ref_item["cantidad"])
@@ -87,15 +96,19 @@ async def listar_ventas(
                         continue
 
                     importe = ref_qty * unit_price
-                    total_refund += importe
+
+                    refunded_amount += importe
                     qty_left -= ref_qty
 
                     refunded_items.append({
                         "nombre": item["nombre"],
                         "cantidad": ref_qty,
-                        "importe": importe,
-                        "refund_receipt": ref["receipt_id"]
+                        "importe": round(importe, 2),
+                        "refund_receipt_id": ref["receipt_id"],
                     })
+
+                    applied_refunds.append(ref["receipt_id"])
+                    ref["_used"] = True
 
             if qty_left > 0:
                 remaining_items.append({
@@ -104,9 +117,9 @@ async def listar_ventas(
                     "precio_unitario": unit_price,
                 })
 
-        max_facturable = round(sale["total"] - total_refund, 2)
+        max_facturable = round(sale["total"] - refunded_amount, 2)
 
-        if total_refund == 0:
+        if refunded_amount == 0:
             refund_status = "NONE"
         elif max_facturable == 0:
             refund_status = "TOTAL"
@@ -116,19 +129,21 @@ async def listar_ventas(
         factura = obtener_factura(sale["receipt_id"])
 
         sale.update({
-            "refunded_amount": total_refund,
-            "max_facturable": max_facturable,
             "refund_status": refund_status,
+            "refunded_amount": round(refunded_amount, 2),
+            "max_facturable": max_facturable,
             "items_facturables": remaining_items,
+            "refunded_items": refunded_items,
+            "applied_refunds": applied_refunds,
             "already_invoiced": factura is not None,
             "invoice": factura,
         })
 
         resultado.append(sale)
 
-    # ============================
-    # AGREGAR REEMBOLSOS COMO TARJETAS
-    # ============================
+    # =================================================
+    # AGREGAR REEMBOLSOS COMO TARJETAS VISUALES
+    # =================================================
     for ref in refunds:
         ref.update({
             "refund_status": "REFUND",
@@ -137,7 +152,5 @@ async def listar_ventas(
         })
         resultado.append(ref)
 
-    # Ordenar por fecha DESC
     resultado.sort(key=lambda x: x["fecha"], reverse=True)
-
     return resultado
