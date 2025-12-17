@@ -1,23 +1,32 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# Routers
 from loyverse_api import router as ventas_router
-# ❌ NO importar email_api
+from facturar_api import router as facturar_router
 
 app = FastAPI()
 
-# CORS (igual que antes)
+# ==============================
+# CORS (obligatorio para frontend)
+# ==============================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # luego se puede restringir
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ SOLO routers que existen y funcionaban
-app.include_router(ventas_router)
+# ==============================
+# Rutas API
+# ==============================
+app.include_router(ventas_router)      # /api/ventas
+app.include_router(facturar_router)    # /api/facturar ✅
 
+# ==============================
+# Health check
+# ==============================
 @app.get("/")
 def root():
     return {"status": "ok"}
