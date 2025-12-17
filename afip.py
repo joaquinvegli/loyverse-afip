@@ -51,6 +51,35 @@ class TLSAdapter(HTTPAdapter):
 
 
 # ======================================================
+# HELPERS DOC
+# ======================================================
+def doc_tipo_y_nro(cliente: dict | None):
+    """
+    Para Factura/NC C:
+    - DNI => DocTipo 96
+    - CUIT => DocTipo 80
+    - Consumidor final sin dato => DocTipo 99 / DocNro 0
+    """
+    if not cliente:
+        return 99, 0
+
+    dni = (cliente.get("dni") or "").strip()
+    cuit = (cliente.get("cuit") or "").strip()
+
+    if cuit:
+        solo = "".join(c for c in cuit if c.isdigit())
+        if solo:
+            return 80, int(solo)
+
+    if dni:
+        solo = "".join(c for c in dni if c.isdigit())
+        if solo:
+            return 96, int(solo)
+
+    return 99, 0
+
+
+# ======================================================
 # 1) GENERAR CMS DER → BASE64
 # ======================================================
 def generar_cms_der_b64(crt_path: str, key_path: str) -> str:
@@ -218,10 +247,9 @@ def wsfe_ultimo_comprobante(token: str, sign: str, cuit: int, pto_vta: int, tipo
 
 
 # ======================================================
-# 4) WSFE – FECAESolicitar (FACTURAR)
+# AUTH (token/sign) con cache y refresh automático
 # ======================================================
-def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, total: float):
-
+def obtener_auth_wsaa():
     key_path = "/etc/secrets/afip_new.key"
     crt_path = "/etc/secrets/afip_new.crt"
 
@@ -230,6 +258,21 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
     if not os.path.exists(crt_path):
         raise Exception("No existe certificado AFIP")
 
+    token, sign = cargar_wsaa()
+    if token and sign:
+        return token, sign
+
+    cms_b64 = generar_cms_der_b64(crt_path, key_path)
+    token, sign = login_cms_directo(cms_b64)
+    guardar_wsaa(token, sign)
+    return token, sign
+
+
+# ======================================================
+# 4) WSFE – FECAESolicitar (FACTURAR)
+# ======================================================
+def wsfe_facturar(tipo_cbte: int, cliente: dict | None, items: list, total: float):
+
     cuit = os.environ.get("AFIP_CUIT")
     if not cuit:
         raise Exception("Falta AFIP_CUIT")
@@ -237,52 +280,29 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
 
     pto_vta = int(os.environ.get("AFIP_PTO_VTA", "1"))
 
-    # =========================================================
-    # 1) WSAA – usar TOKEN CACHEADO si está disponible
-    # =========================================================
-    token, sign = cargar_wsaa()
+    doc_tipo, doc_nro = doc_tipo_y_nro(cliente)
 
-    if not token or not sign:
-        cms_b64 = generar_cms_der_b64(crt_path, key_path)
-        token, sign = login_cms_directo(cms_b64)
-        guardar_wsaa(token, sign)
+    # Auth
+    token, sign = obtener_auth_wsaa()
 
-    # =========================================================
-    # 2) Obtener último comprobante
-    # =========================================================
+    # Último comprobante (refresh si token venció)
     try:
-        ultimo = wsfe_ultimo_comprobante(
-            token=token,
-            sign=sign,
-            cuit=cuit_int,
-            pto_vta=pto_vta,
-            tipo_cbte=tipo_cbte
-        )
+        ultimo = wsfe_ultimo_comprobante(token, sign, cuit_int, pto_vta, tipo_cbte)
     except:
-        # TOKEN VENCIDO → RENOVAR
-        cms_b64 = generar_cms_der_b64(crt_path, key_path)
+        cms_b64 = generar_cms_der_b64("/etc/secrets/afip_new.crt", "/etc/secrets/afip_new.key")
         token, sign = login_cms_directo(cms_b64)
         guardar_wsaa(token, sign)
-
-        ultimo = wsfe_ultimo_comprobante(
-            token=token,
-            sign=sign,
-            cuit=cuit_int,
-            pto_vta=pto_vta,
-            tipo_cbte=tipo_cbte
-        )
+        ultimo = wsfe_ultimo_comprobante(token, sign, cuit_int, pto_vta, tipo_cbte)
 
     cbte_nro = ultimo + 1
 
-    # =========================================================
-    # 3) XML Items
-    # =========================================================
+    # Items XML
     xml_items = ""
     for it in items:
         descripcion = it["descripcion"]
-        cantidad = it["cantidad"]
-        precio = it["precio"]
-        importe_item = round(float(cantidad) * float(precio), 2)
+        cantidad = float(it["cantidad"])
+        precio = float(it["precio"])
+        importe_item = round(cantidad * precio, 2)
 
         xml_items += f"""
         <ar:Item>
@@ -295,9 +315,6 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
         </ar:Item>
         """
 
-    # =========================================================
-    # 4) FECAESolicitar
-    # =========================================================
     wsfe_url = os.environ.get(
         "AFIP_WSFE_URL",
         "https://servicios1.afip.gov.ar/wsfev1/service.asmx"
@@ -334,9 +351,6 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
             <ar:ImpOpEx>0</ar:ImpOpEx>
             <ar:ImpIVA>0</ar:ImpIVA>
             <ar:ImpTrib>0</ar:ImpTrib>
-            <ar:FchServDesde></ar:FchServDesde>
-            <ar:FchServHasta></ar:FchServHasta>
-            <ar:FchVtoPago></ar:FchVtoPago>
             <ar:MonId>PES</ar:MonId>
             <ar:MonCotiz>1</ar:MonCotiz>
             <ar:Items>
@@ -360,9 +374,8 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
     r = session.post(wsfe_url, data=soap_body.encode("utf-8"), headers=headers, timeout=20)
 
     if r.status_code != 200:
-        raise Exception(f"WSFE devolvió {r.statuscode}: {r.text}")
+        raise Exception(f"WSFE devolvió {r.status_code}: {r.text}")
 
-    # Parse respuesta
     tree = ET.fromstring(r.text)
 
     cae = None
@@ -375,29 +388,17 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
             cae = elem.text
         if elem.tag.endswith("CAEFchVto"):
             vto = elem.text
-        if elem.tag.endswith("Obs"):
-            obs.append(elem.text)
         if elem.tag.endswith("ErrMsg"):
             errores.append(elem.text)
 
-    # -------------------------
-    # FIX: NORMALIZAR LISTAS
-    # -------------------------
     errores = [str(e) for e in errores if e]
     obs = [str(o) for o in obs if o]
 
-    # Si AFIP NO devolvió CAE → mostrar motivo real
     if not cae:
         msg = "La AFIP rechazó la factura.\n"
-
         if errores:
             msg += "Errores: " + " | ".join(errores) + "\n"
-
-        if obs:
-            msg += "Observaciones: " + " | ".join(obs) + "\n"
-
         msg += "\nRespuesta completa AFIP:\n" + r.text[:2000]
-
         raise Exception(msg)
 
     return {
@@ -405,4 +406,176 @@ def wsfe_facturar(tipo_cbte: int, doc_tipo: int, doc_nro: int, items: list, tota
         "vencimiento": vto,
         "cbte_nro": cbte_nro,
         "pto_vta": pto_vta
+    }
+
+
+# ======================================================
+# 5) WSFE – NOTA DE CRÉDITO C (CbteTipo=13)
+#    Asociada a Factura C (CbteTipo=11)
+# ======================================================
+def wsfe_nota_credito_c(cliente: dict | None,
+                        items: list,
+                        total: float,
+                        factura_asociada: dict):
+    """
+    factura_asociada requiere:
+    - cbte_nro
+    - pto_vta
+    (asumimos Factura C = tipo 11)
+    """
+
+    cuit = os.environ.get("AFIP_CUIT")
+    if not cuit:
+        raise Exception("Falta AFIP_CUIT")
+    cuit_int = int(cuit)
+
+    pto_vta = int(os.environ.get("AFIP_PTO_VTA", "1"))
+
+    # Tipos AFIP
+    TIPO_FACTURA_C = 11
+    TIPO_NC_C = 13
+
+    doc_tipo, doc_nro = doc_tipo_y_nro(cliente)
+
+    # Auth
+    token, sign = obtener_auth_wsaa()
+
+    # Último NC
+    try:
+        ultimo = wsfe_ultimo_comprobante(token, sign, cuit_int, pto_vta, TIPO_NC_C)
+    except:
+        cms_b64 = generar_cms_der_b64("/etc/secrets/afip_new.crt", "/etc/secrets/afip_new.key")
+        token, sign = login_cms_directo(cms_b64)
+        guardar_wsaa(token, sign)
+        ultimo = wsfe_ultimo_comprobante(token, sign, cuit_int, pto_vta, TIPO_NC_C)
+
+    cbte_nro = ultimo + 1
+
+    # Items XML
+    xml_items = ""
+    for it in items:
+        descripcion = it["descripcion"]
+        cantidad = float(it["cantidad"])
+        precio = float(it["precio"])
+        importe_item = round(cantidad * precio, 2)
+
+        xml_items += f"""
+        <ar:Item>
+            <ar:Pro_cod>{descripcion}</ar:Pro_cod>
+            <ar:Pro_ds>{descripcion}</ar:Pro_ds>
+            <ar:Pro_qty>{cantidad}</ar:Pro_qty>
+            <ar:Pro_umed>7</ar:Pro_umed>
+            <ar:Pro_precio>{precio}</ar:Pro_precio>
+            <ar:Pro_total_item>{importe_item}</ar:Pro_total_item>
+        </ar:Item>
+        """
+
+    wsfe_url = os.environ.get(
+        "AFIP_WSFE_URL",
+        "https://servicios1.afip.gov.ar/wsfev1/service.asmx"
+    )
+
+    # CbtesAsoc: referenciar la Factura C original
+    asoc_pto = int(factura_asociada["pto_vta"])
+    asoc_nro = int(factura_asociada["cbte_nro"])
+
+    soap_body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+    xmlns:ar="http://ar.gov.afip.dif.FEV1/">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <ar:FECAESolicitar>
+      <ar:Auth>
+        <ar:Token>{token}</ar:Token>
+        <ar:Sign>{sign}</ar:Sign>
+        <ar:Cuit>{cuit_int}</ar:Cuit>
+      </ar:Auth>
+      <ar:FeCAEReq>
+        <ar:FeCabReq>
+          <ar:CantReg>1</ar:CantReg>
+          <ar:PtoVta>{pto_vta}</ar:PtoVta>
+          <ar:CbteTipo>{TIPO_NC_C}</ar:CbteTipo>
+        </ar:FeCabReq>
+        <ar:FeDetReq>
+          <ar:FECAEDetRequest>
+            <ar:Concepto>1</ar:Concepto>
+            <ar:DocTipo>{doc_tipo}</ar:DocTipo>
+            <ar:DocNro>{doc_nro}</ar:DocNro>
+            <ar:CbteDesde>{cbte_nro}</ar:CbteDesde>
+            <ar:CbteHasta>{cbte_nro}</ar:CbteHasta>
+            <ar:CbteFch>{datetime.now().strftime('%Y%m%d')}</ar:CbteFch>
+
+            <ar:ImpTotal>{total}</ar:ImpTotal>
+            <ar:ImpTotConc>0</ar:ImpTotConc>
+            <ar:ImpNeto>{total}</ar:ImpNeto>
+            <ar:ImpOpEx>0</ar:ImpOpEx>
+            <ar:ImpIVA>0</ar:ImpIVA>
+            <ar:ImpTrib>0</ar:ImpTrib>
+
+            <ar:MonId>PES</ar:MonId>
+            <ar:MonCotiz>1</ar:MonCotiz>
+
+            <ar:CbtesAsoc>
+              <ar:CbteAsoc>
+                <ar:Tipo>{TIPO_FACTURA_C}</ar:Tipo>
+                <ar:PtoVta>{asoc_pto}</ar:PtoVta>
+                <ar:Nro>{asoc_nro}</ar:Nro>
+              </ar:CbteAsoc>
+            </ar:CbtesAsoc>
+
+            <ar:Items>
+              {xml_items}
+            </ar:Items>
+          </ar:FECAEDetRequest>
+        </ar:FeDetReq>
+      </ar:FeCAEReq>
+    </ar:FECAESolicitar>
+  </soapenv:Body>
+</soapenv:Envelope>
+"""
+
+    headers = {
+        "Content-Type": "text/xml; charset=utf-8",
+        "SOAPAction": "http://ar.gov.afip.dif.FEV1/FECAESolicitar",
+    }
+
+    session = requests.Session()
+    session.mount("https://", TLSAdapter())
+    r = session.post(wsfe_url, data=soap_body.encode("utf-8"), headers=headers, timeout=20)
+
+    if r.status_code != 200:
+        raise Exception(f"WSFE devolvió {r.status_code}: {r.text}")
+
+    tree = ET.fromstring(r.text)
+
+    cae = None
+    vto = None
+    errores = []
+
+    for elem in tree.iter():
+        if elem.tag.endswith("CAE"):
+            cae = elem.text
+        if elem.tag.endswith("CAEFchVto"):
+            vto = elem.text
+        if elem.tag.endswith("ErrMsg"):
+            errores.append(elem.text)
+
+    errores = [str(e) for e in errores if e]
+
+    if not cae:
+        msg = "La AFIP rechazó la Nota de Crédito.\n"
+        if errores:
+            msg += "Errores: " + " | ".join(errores) + "\n"
+        msg += "\nRespuesta completa AFIP:\n" + r.text[:2000]
+        raise Exception(msg)
+
+    return {
+        "cae": cae,
+        "vencimiento": vto,
+        "cbte_nro": cbte_nro,
+        "pto_vta": pto_vta,
+        "tipo_cbte": 13,
+        "asoc_cbte_tipo": 11,
+        "asoc_pto_vta": asoc_pto,
+        "asoc_cbte_nro": asoc_nro,
     }
