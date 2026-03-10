@@ -1,3 +1,4 @@
+# json_db.py
 import os
 import json
 from typing import Any, Dict, Optional
@@ -6,33 +7,46 @@ from google_drive_client import download_facturas_db, upload_facturas_db
 
 LOCAL_PATH = "facturas_db.json"
 
+# ============================================================
+# CACHÉ EN MEMORIA — evita depender del caché de Cloudinary
+# ============================================================
+_DB_CACHE: Dict[str, Any] | None = None
+
 
 def _load_db() -> Dict[str, Any]:
-    """
-    DB en Drive. Estructura:
-    {
-      "facturas": { "<sale_receipt_id>": {...invoice...} },
-      "notas_credito": { "<refund_receipt_id>": {...nc...} }
-    }
-    Si venías guardando solo un dict plano, lo convertimos sin romper.
-    """
+    global _DB_CACHE
+
+    # Si ya tenemos datos en memoria, los usamos directamente
+    if _DB_CACHE is not None:
+        return _DB_CACHE
+
+    # Primera vez: intentar bajar desde Cloudinary
+    print("DEBUG json_db → Cargando DB desde Cloudinary por primera vez")
     data = download_facturas_db(LOCAL_PATH) or {}
 
-    # Compat: si antes era dict plano de facturas
+    # Compatibilidad con formato viejo (dict plano sin claves "facturas"/"notas_credito")
     if "facturas" not in data and "notas_credito" not in data:
-        return {"facturas": data, "notas_credito": {}}
-
+        data = {"facturas": data, "notas_credito": {}}
     if "facturas" not in data:
         data["facturas"] = {}
     if "notas_credito" not in data:
         data["notas_credito"] = {}
 
-    return data
+    _DB_CACHE = data
+    return _DB_CACHE
 
 
 def _save_db(db: Dict[str, Any]) -> None:
+    global _DB_CACHE
+
+    # Actualizar caché en memoria
+    _DB_CACHE = db
+
+    # Guardar en disco
     with open(LOCAL_PATH, "w", encoding="utf-8") as f:
         json.dump(db, f, indent=2, ensure_ascii=False)
+
+    # Subir a Cloudinary como backup
     upload_facturas_db(LOCAL_PATH)
 
 
