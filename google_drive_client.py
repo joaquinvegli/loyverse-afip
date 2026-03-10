@@ -20,6 +20,7 @@ cloudinary.config(
 )
 
 FACTURAS_DB_PUBLIC_ID = "facturacion/facturas_db"
+CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "")
 
 
 # ============================================================
@@ -31,13 +32,16 @@ def upload_pdf_to_drive(local_pdf_path: str, pdf_name: str) -> Tuple[str, str]:
     result = cloudinary.uploader.upload(
         local_pdf_path,
         public_id=f"facturacion/pdfs/{nombre_sin_ext}",
-        resource_type="raw",
+        resource_type="image",   # Cloudinary maneja PDFs como "image"
+        format="pdf",
         overwrite=True,
         invalidate=True,
     )
 
     public_id = result.get("public_id", "")
-    url = result.get("secure_url", "")
+
+    # URL directa y visualizable
+    url = f"https://res.cloudinary.com/{CLOUD_NAME}/image/upload/{public_id}.pdf"
 
     return public_id, url
 
@@ -47,7 +51,6 @@ def upload_pdf_to_drive(local_pdf_path: str, pdf_name: str) -> Tuple[str, str]:
 # ============================================================
 def download_facturas_db(local_path: str = "facturas_db.json") -> Dict[str, Any]:
     try:
-        # Obtenemos la URL del archivo
         result = cloudinary.api.resource(
             FACTURAS_DB_PUBLIC_ID,
             resource_type="raw",
@@ -56,21 +59,19 @@ def download_facturas_db(local_path: str = "facturas_db.json") -> Dict[str, Any]
         if not url:
             return {}
 
-        # Agregamos timestamp para evitar caché
+        # Timestamp para evitar caché
         url_sin_cache = f"{url}?t={int(time.time())}"
 
         r = httpx.get(url_sin_cache, timeout=15, follow_redirects=True)
         r.raise_for_status()
 
-        # Cloudinary a veces devuelve el contenido vacío en caché
         content = r.text.strip()
         if not content:
-            print("DEBUG → Cloudinary devolvió contenido vacío, retornando {}")
+            print("DEBUG → Cloudinary devolvió contenido vacío")
             return {}
 
         data = json.loads(content)
 
-        # Guardar copia local
         with open(local_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
@@ -101,7 +102,7 @@ def upload_facturas_db(local_path: str = "facturas_db.json") -> None:
             public_id=FACTURAS_DB_PUBLIC_ID,
             resource_type="raw",
             overwrite=True,
-            invalidate=True,  # fuerza invalidar caché de Cloudinary
+            invalidate=True,
         )
         print("DEBUG → facturas_db.json subido a Cloudinary:", result.get("secure_url"))
     except Exception as e:
