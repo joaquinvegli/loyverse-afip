@@ -19,7 +19,7 @@ cloudinary.config(
     secure=True,
 )
 
-FACTURAS_DB_PUBLIC_ID = "facturacion/facturas_db"
+FACTURAS_DB_PUBLIC_ID = "facturacion/facturas_db.json"
 CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "")
 
 
@@ -32,15 +32,13 @@ def upload_pdf_to_drive(local_pdf_path: str, pdf_name: str) -> Tuple[str, str]:
     result = cloudinary.uploader.upload(
         local_pdf_path,
         public_id=f"facturacion/pdfs/{nombre_sin_ext}",
-        resource_type="image",   # Cloudinary maneja PDFs como "image"
+        resource_type="image",
         format="pdf",
         overwrite=True,
         invalidate=True,
     )
 
     public_id = result.get("public_id", "")
-
-    # URL directa y visualizable
     url = f"https://res.cloudinary.com/{CLOUD_NAME}/image/upload/{public_id}.pdf"
 
     return public_id, url
@@ -57,6 +55,7 @@ def download_facturas_db(local_path: str = "facturas_db.json") -> Dict[str, Any]
         )
         url = result.get("secure_url")
         if not url:
+            print("DEBUG → Cloudinary no devolvió URL para facturas_db")
             return {}
 
         # Timestamp para evitar caché
@@ -66,6 +65,8 @@ def download_facturas_db(local_path: str = "facturas_db.json") -> Dict[str, Any]
         r.raise_for_status()
 
         content = r.text.strip()
+        print(f"DEBUG → Cloudinary status: {r.status_code}, content length: {len(content)}, primeros 200 chars: {content[:200]}")
+
         if not content:
             print("DEBUG → Cloudinary devolvió contenido vacío")
             return {}
