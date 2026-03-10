@@ -25,8 +25,11 @@ COND_IVA = "MONOTRIBUTO"
 INGRESOS_BRUTOS = "20-39157186-5"
 INICIO_ACT = "01/01/2020"
 
-# Logo ya validado en Render
-LOGO_PATH = "static/logo_fixed.png"
+# -----------------------------
+# LOGO — ruta absoluta (funciona siempre en Render)
+# -----------------------------
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGO_PATH = os.path.join(_BASE_DIR, "static", "logo_fixed.png")
 
 
 def _formatear_cuit_display(cuit_str: str) -> str:
@@ -44,9 +47,6 @@ def _formatear_fecha_cae_vto(cae_vto: str) -> str:
 
 
 def _wrap_text(text, max_chars=45):
-    """
-    Corta texto en líneas de largo fijo sin romper palabras.
-    """
     palabras = text.split(" ")
     lineas = []
     actual = ""
@@ -64,27 +64,14 @@ def _wrap_text(text, max_chars=45):
 
 
 # ============================================
-# QR OFICIAL AFIP (RG 4892) - FORMATO NUEVO
+# QR OFICIAL AFIP (RG 4892)
 # ============================================
 def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto, fecha_cbte, total, cliente_dni):
-    """
-    Genera el QR OFICIAL de AFIP:
-    - JSON con campos estándar
-    - Codificado en Base64 URL-safe
-    - Enviado en el parámetro ?p= de la URL de AFIP
-    """
-
-    # 1) Fecha del comprobante en formato YYYY-MM-DD
-    #    `fecha_cbte` viene como "dd/mm/YYYY"
     try:
         fecha_iso = datetime.strptime(fecha_cbte, "%d/%m/%Y").strftime("%Y-%m-%d")
     except Exception:
-        # fallback best-effort
         fecha_iso = datetime.now().strftime("%Y-%m-%d")
 
-    # 2) Tipo y número de documento del receptor
-    #    - Si hay DNI → DocTipo = 96, nroDocRec = DNI
-    #    - Si NO hay DNI → Consumidor Final → DocTipo = 99, nroDocRec = 0
     cliente_dni_str = (cliente_dni or "").strip()
     if cliente_dni_str.isdigit():
         tipo_doc_rec = 96
@@ -93,33 +80,27 @@ def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto, fecha_cbte, total, cl
         tipo_doc_rec = 99
         nro_doc_rec = 0
 
-    # 3) Construir payload JSON según AFIP
     payload = {
         "ver": 1,
         "fecha": fecha_iso,
         "cuit": int("".join(ch for ch in str(cuit) if ch.isdigit())),
         "ptoVta": int(pto_vta),
-        # AFIP en documentación habla de tipoCmp, tu versión anterior usaba tipoCbte;
-        # tipoCmp es el campo oficial.
-        "tipoCmp": 11,                         # 11 = Factura C
+        "tipoCmp": 11,
         "nroCmp": int(cbte_nro),
         "importe": float(total),
         "moneda": "PES",
         "ctz": 1,
         "tipoDocRec": int(tipo_doc_rec),
         "nroDocRec": int(nro_doc_rec),
-        # Podríamos agregar "ivaCond": 4 (Consumidor Final) a futuro si lo exige AFIP.
         "tipoCodAut": "E",
         "codAut": int(cae),
     }
 
-    # 4) Codificar a Base64 URL-safe
     payload_str = json.dumps(payload, separators=(",", ":"))
     payload_b64 = base64.urlsafe_b64encode(payload_str.encode("utf-8")).decode("utf-8")
 
     url = f"https://www.afip.gob.ar/fe/qr/?p={payload_b64}"
 
-    # 5) Generar imagen QR
     qr_img = qrcode.make(url)
     buf = BytesIO()
     qr_img.save(buf, format="PNG")
@@ -184,6 +165,8 @@ def generar_pdf_factura_c(
             )
         except Exception as e:
             print("Error dibujando logo:", e)
+    else:
+        print(f"Logo no encontrado en: {LOGO_PATH}")
 
     # Datos comercio
     tx = left + logo_w + 10
@@ -214,7 +197,7 @@ def generar_pdf_factura_c(
     box_w = 210
     box_h = 75
     box_x = width - left - box_w
-    box_y = top_y  # antes estaba más abajo
+    box_y = top_y
 
     c.rect(box_x, box_y - box_h, box_w, box_h, stroke=1, fill=0)
 
