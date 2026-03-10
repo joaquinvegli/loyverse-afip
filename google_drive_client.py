@@ -110,17 +110,3 @@ def upload_facturas_db(local_path: str = "facturas_db.json") -> None:
 
     except Exception as e:
         print(f"⚠️ Error subiendo facturas_db a Supabase: {e}")
-```
-
-También podés sacar `cloudinary` del `requirements.txt` ya que no lo usamos más. Reemplazalo con:
-```
-fastapi
-uvicorn
-httpx
-python-multipart
-requests
-git+https://github.com/reingart/pyafipws.git#egg=pyafipws
-reportlab
-qrcode
-Pillow
-supabase
