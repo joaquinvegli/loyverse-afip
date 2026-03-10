@@ -76,7 +76,7 @@ async def facturar(req: FacturaRequest):
         # Factura C
         TIPO_FACTURA_C = 11
 
-        # 2) Llamada AFIP (FORMA CORRECTA)
+        # 2) Llamada AFIP
         result = wsfe_facturar(
             tipo_cbte=TIPO_FACTURA_C,
             cliente={
@@ -95,7 +95,7 @@ async def facturar(req: FacturaRequest):
         cbte_nro = result["cbte_nro"]
         pto_vta = result["pto_vta"]
 
-        # 3) PDF local
+        # 3) Generar PDF local
         fecha_hoy = datetime.now().strftime("%d/%m/%Y")
         pdf_path = generar_pdf_factura_c(
             razon_social=RAZON_SOCIAL,
@@ -116,11 +116,11 @@ async def facturar(req: FacturaRequest):
             total=req.total,
         )
 
-        # 4) Subir a Google Drive
-        pdf_filename = f"Factura_{cbte_nro}.pdf"
+        # 4) Subir PDF a Cloudinary
+        pdf_filename = f"FACT-C-{pto_vta:04d}-{cbte_nro:08d}.pdf"
         drive_id, drive_url = upload_pdf_to_drive(pdf_path, pdf_filename)
 
-        # 5) Guardar factura en DB
+        # 5) Guardar factura en DB (incluye email del cliente)
         factura_data = {
             "cbte_nro": cbte_nro,
             "pto_vta": pto_vta,
@@ -129,10 +129,13 @@ async def facturar(req: FacturaRequest):
             "fecha": fecha_hoy,
             "drive_id": drive_id,
             "drive_url": drive_url,
+            "email_cliente": req.cliente.email if req.cliente else None,
+            "cliente_nombre": req.cliente.name if req.cliente else "Consumidor Final",
+            "total": req.total,
         }
         guardar_factura(req.receipt_id, factura_data)
 
-        # 6) PDF base64 para vista inmediata
+        # 6) PDF en base64 para vista inmediata
         with open(pdf_path, "rb") as f:
             pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
 
