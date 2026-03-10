@@ -4,44 +4,43 @@ import json
 import time
 from typing import Tuple, Dict, Any
 
-import cloudinary
-import cloudinary.uploader
-import cloudinary.api
 import httpx
+from supabase import create_client, Client
 
 # ============================================================
-# CONFIGURACIÓN CLOUDINARY
+# CONFIGURACIÓN SUPABASE
 # ============================================================
-cloudinary.config(
-    cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
-    api_key=os.environ.get("CLOUDINARY_API_KEY"),
-    api_secret=os.environ.get("CLOUDINARY_API_SECRET"),
-    secure=True,
-)
+def get_supabase() -> Client:
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        raise RuntimeError("Faltan SUPABASE_URL o SUPABASE_KEY en variables de entorno")
+    return create_client(url, key)
 
-FACTURAS_DB_PUBLIC_ID = "facturacion/facturas_db.json"
-CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "")
+SUPABASE_BUCKET = "facturas"
+FACTURAS_DB_PATH = "db/facturas_db.json"
 
 
 # ============================================================
 # 1) SUBIR PDF
 # ============================================================
 def upload_pdf_to_drive(local_pdf_path: str, pdf_name: str) -> Tuple[str, str]:
-    nombre_sin_ext = pdf_name.replace(".pdf", "")
+    supabase = get_supabase()
 
-    result = cloudinary.uploader.upload(
-        local_pdf_path,
-        public_id=f"facturacion/pdfs/{nombre_sin_ext}",
-        resource_type="image",
-        format="pdf",
-        overwrite=True,
-        invalidate=True,
+    with open(local_pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+
+    path_en_bucket = f"pdfs/{pdf_name}"
+
+    supabase.storage.from_(SUPABASE_BUCKET).upload(
+        path=path_en_bucket,
+        file=pdf_bytes,
+        file_options={"content-type": "application/pdf", "upsert": "true"},
     )
 
-    public_id = result.get("public_id", "")
-    url = f"https://res.cloudinary.com/{CLOUD_NAME}/image/upload/{public_id}.pdf"
+    url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(path_en_bucket)
 
-    return public_id, url
+    return path_en_bucket, url
 
 
 # ============================================================
@@ -49,26 +48,27 @@ def upload_pdf_to_drive(local_pdf_path: str, pdf_name: str) -> Tuple[str, str]:
 # ============================================================
 def download_facturas_db(local_path: str = "facturas_db.json") -> Dict[str, Any]:
     try:
-        result = cloudinary.api.resource(
-            FACTURAS_DB_PUBLIC_ID,
-            resource_type="raw",
-        )
-        url = result.get("secure_url")
-        if not url:
-            print("DEBUG → Cloudinary no devolvió URL para facturas_db")
-            return {}
+        supabase = get_supabase()
+
+        url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(FACTURAS_DB_PATH)
 
         # Timestamp para evitar caché
         url_sin_cache = f"{url}?t={int(time.time())}"
 
         r = httpx.get(url_sin_cache, timeout=15, follow_redirects=True)
+
+        # Si no existe todavía devuelve 400 o 404
+        if r.status_code in (400, 404):
+            print("DEBUG → facturas_db.json no existe en Supabase todavía")
+            return {}
+
         r.raise_for_status()
 
         content = r.text.strip()
-        print(f"DEBUG → Cloudinary status: {r.status_code}, content length: {len(content)}, primeros 200 chars: {content[:200]}")
+        print(f"DEBUG → Supabase DB status: {r.status_code}, length: {len(content)}, inicio: {content[:100]}")
 
         if not content:
-            print("DEBUG → Cloudinary devolvió contenido vacío")
+            print("DEBUG → Supabase devolvió contenido vacío")
             return {}
 
         data = json.loads(content)
@@ -78,14 +78,11 @@ def download_facturas_db(local_path: str = "facturas_db.json") -> Dict[str, Any]
 
         return data
 
-    except cloudinary.exceptions.NotFound:
-        print("DEBUG → facturas_db.json no existe en Cloudinary todavía")
-        return {}
     except json.JSONDecodeError as e:
-        print(f"⚠️ Error parseando JSON desde Cloudinary: {e}")
+        print(f"⚠️ Error parseando JSON desde Supabase: {e}")
         return {}
     except Exception as e:
-        print(f"⚠️ Error descargando facturas_db desde Cloudinary: {e}")
+        print(f"⚠️ Error descargando facturas_db desde Supabase: {e}")
         return {}
 
 
@@ -98,13 +95,32 @@ def upload_facturas_db(local_path: str = "facturas_db.json") -> None:
         return
 
     try:
-        result = cloudinary.uploader.upload(
-            local_path,
-            public_id=FACTURAS_DB_PUBLIC_ID,
-            resource_type="raw",
-            overwrite=True,
-            invalidate=True,
+        supabase = get_supabase()
+
+        with open(local_path, "rb") as f:
+            json_bytes = f.read()
+
+        supabase.storage.from_(SUPABASE_BUCKET).upload(
+            path=FACTURAS_DB_PATH,
+            file=json_bytes,
+            file_options={"content-type": "application/json", "upsert": "true"},
         )
-        print("DEBUG → facturas_db.json subido a Cloudinary:", result.get("secure_url"))
+
+        print("DEBUG → facturas_db.json subido a Supabase correctamente")
+
     except Exception as e:
-        print(f"⚠️ Error subiendo facturas_db a Cloudinary: {e}")
+        print(f"⚠️ Error subiendo facturas_db a Supabase: {e}")
+```
+
+También podés sacar `cloudinary` del `requirements.txt` ya que no lo usamos más. Reemplazalo con:
+```
+fastapi
+uvicorn
+httpx
+python-multipart
+requests
+git+https://github.com/reingart/pyafipws.git#egg=pyafipws
+reportlab
+qrcode
+Pillow
+supabase
