@@ -32,6 +32,10 @@ app.include_router(email_router)       # /api/enviar_email ✅
 @app.get("/")
 def root():
     return {"status": "ok"}
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
     
 @app.get("/debug/recibo/{receipt_id}")
 async def debug_recibo(receipt_id: str):
@@ -42,3 +46,4 @@ async def debug_recibo(receipt_id: str):
     async with httpx.AsyncClient() as client:
         r = await client.get(url, headers={"Authorization": f"Bearer {token}"})
         return r.json()
+
