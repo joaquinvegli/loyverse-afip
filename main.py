@@ -32,3 +32,13 @@ app.include_router(email_router)       # /api/enviar_email ✅
 @app.get("/")
 def root():
     return {"status": "ok"}
+    
+@app.get("/debug/recibo/{receipt_id}")
+async def debug_recibo(receipt_id: str):
+    import httpx
+    import os
+    token = os.environ.get("LOYVERSE_TOKEN")
+    url = f"https://api.loyverse.com/v1.0/receipts?receipt_number={receipt_id}&expand=customer"
+    async with httpx.AsyncClient() as client:
+        r = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+        return r.json()
