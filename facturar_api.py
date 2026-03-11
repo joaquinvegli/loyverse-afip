@@ -10,10 +10,6 @@ from pdf_afip import generar_pdf_factura_c
 from json_db import esta_facturada, guardar_factura, obtener_factura
 from google_drive_client import upload_pdf_to_drive
 
-
-# =========================
-# Datos del emisor
-# =========================
 RAZON_SOCIAL = "JOAQUIN VEGLI"
 DOMICILIO = "ALSINA 155 LOC 15, BAHIA BLANCA, BUENOS AIRES. CP: 8000"
 CUIT = "20391571865"
@@ -21,15 +17,13 @@ CUIT = "20391571865"
 router = APIRouter(prefix="/api", tags=["facturacion"])
 
 
-# =========================
-# MODELOS
-# =========================
 class ClienteData(BaseModel):
     id: Optional[str] = None
     name: Optional[str] = None
     email: Optional[str] = None
     dni: Optional[str] = None
     cuit: Optional[str] = None
+    domicilio: Optional[str] = None
 
 
 class ItemData(BaseModel):
@@ -45,9 +39,6 @@ class FacturaRequest(BaseModel):
     total: float
 
 
-# =========================
-# CONSULTAR FACTURA EXISTENTE
-# =========================
 @router.get("/factura/{receipt_id}")
 def obtener_factura_existente(receipt_id: str):
     data = obtener_factura(receipt_id)
@@ -56,23 +47,16 @@ def obtener_factura_existente(receipt_id: str):
     return {"exists": True, "invoice": data}
 
 
-# =========================
-# FACTURAR
-# =========================
 @router.post("/facturar")
 async def facturar(req: FacturaRequest):
-
-    # 1) Anti doble facturación
     if esta_facturada(req.receipt_id):
         raise HTTPException(
             status_code=400,
             detail=f"La venta {req.receipt_id} ya fue facturada anteriormente."
         )
-
     try:
         TIPO_FACTURA_C = 11
 
-        # 2) Llamada AFIP — pasar tanto dni como cuit
         result = wsfe_facturar(
             tipo_cbte=TIPO_FACTURA_C,
             cliente={
@@ -92,7 +76,6 @@ async def facturar(req: FacturaRequest):
         cbte_nro = result["cbte_nro"]
         pto_vta = result["pto_vta"]
 
-        # 3) Generar PDF
         fecha_hoy = datetime.now().strftime("%d/%m/%Y")
         pdf_path = generar_pdf_factura_c(
             razon_social=RAZON_SOCIAL,
@@ -106,6 +89,7 @@ async def facturar(req: FacturaRequest):
             cliente_nombre=req.cliente.name if req.cliente else "Consumidor Final",
             cliente_dni=req.cliente.dni if req.cliente else None,
             cliente_cuit=req.cliente.cuit if req.cliente else None,
+            cliente_domicilio=req.cliente.domicilio if req.cliente else None,
             items=[{
                 "descripcion": it.nombre,
                 "cantidad": it.cantidad,
@@ -114,11 +98,9 @@ async def facturar(req: FacturaRequest):
             total=req.total,
         )
 
-        # 4) Subir PDF
         pdf_filename = f"FACT-C-{pto_vta:04d}-{cbte_nro:08d}.pdf"
         drive_id, drive_url = upload_pdf_to_drive(pdf_path, pdf_filename)
 
-        # 5) Guardar en DB
         factura_data = {
             "cbte_nro": cbte_nro,
             "pto_vta": pto_vta,
@@ -131,15 +113,14 @@ async def facturar(req: FacturaRequest):
             "cliente_nombre": req.cliente.name if req.cliente else "Consumidor Final",
             "cliente_dni": req.cliente.dni if req.cliente else None,
             "cliente_cuit": req.cliente.cuit if req.cliente else None,
+            "cliente_domicilio": req.cliente.domicilio if req.cliente else None,
             "total": req.total,
         }
         guardar_factura(req.receipt_id, factura_data)
 
-        # 6) PDF en base64
         with open(pdf_path, "rb") as f:
             pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
 
-        # 7) Respuesta
         return {
             "status": "ok",
             "receipt_id": req.receipt_id,
