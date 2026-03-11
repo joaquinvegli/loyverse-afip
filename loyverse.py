@@ -53,35 +53,41 @@ async def get_customer(customer_id: str):
 
 
 # ============================================
-# EXTRAER DNI DESDE CAMPOS CUSTOM DE LOYVERSE
+# CLASIFICAR DOCUMENTO (DNI o CUIT/CUIL)
 # ============================================
-def _extraer_dni(customer: dict) -> str | None:
+def _clasificar_documento(customer: dict) -> tuple:
     """
-    Loyverse guarda datos extra del cliente en una lista llamada
-    'customer_code' o en campos custom. Intentamos extraer el DNI
-    de varios lugares posibles.
+    Retorna (tipo, numero_limpio) donde tipo es "cuit" o "dni", o (None, None).
+    Busca en note y customer_code.
+    - 11 dígitos → CUIT/CUIL
+    - 7 u 8 dígitos → DNI
     """
     if not customer:
-        return None
+        return None, None
 
-    # 1) Campo "note" — algunos negocios guardan el DNI ahí
-    note = (customer.get("note") or "").strip()
-    if note.isdigit() and 7 <= len(note) <= 11:
-        return note
+    candidatos = [
+        (customer.get("note") or "").strip(),
+        (customer.get("customer_code") or "").strip(),
+    ]
 
-    # 2) Campo "customer_code"
-    code = (customer.get("customer_code") or "").strip()
-    if code.isdigit() and 7 <= len(code) <= 11:
-        return code
+    for raw in candidatos:
+        if not raw:
+            continue
+        solo_digitos = "".join(c for c in raw if c.isdigit())
+        if not solo_digitos:
+            continue
+        if len(solo_digitos) == 11:
+            return "cuit", solo_digitos
+        if 7 <= len(solo_digitos) <= 8:
+            return "dni", solo_digitos
 
-    return None
+    return None, None
 
 
 # ============================================
 # NORMALIZADOR DE RECIBOS
 # ============================================
 def normalize_receipt(r: dict) -> dict:
-    # Cliente expandido (viene cuando se usa expand=customer)
     customer = r.get("customer") or {}
     cliente_id = r.get("customer_id")
 
@@ -92,11 +98,14 @@ def normalize_receipt(r: dict) -> dict:
             or "Consumidor Final"
         )
         cliente_email = customer.get("email") or ""
-        cliente_dni = _extraer_dni(customer)
+        doc_tipo, doc_nro = _clasificar_documento(customer)
+        cliente_dni = doc_nro if doc_tipo == "dni" else None
+        cliente_cuit = doc_nro if doc_tipo == "cuit" else None
     else:
         cliente_nombre = "Consumidor Final"
         cliente_email = ""
         cliente_dni = None
+        cliente_cuit = None
 
     return {
         "receipt_id": r.get("receipt_number"),
@@ -104,12 +113,11 @@ def normalize_receipt(r: dict) -> dict:
         "fecha": r.get("created_at"),
         "total": r.get("total_money"),
         "descuento_total": r.get("total_discount", 0),
-        # cliente
         "cliente_id": cliente_id,
         "cliente_nombre": cliente_nombre,
         "cliente_email": cliente_email,
         "cliente_dni": cliente_dni,
-        # items
+        "cliente_cuit": cliente_cuit,
         "items": [
             {
                 "nombre": item.get("item_name"),
@@ -119,7 +127,6 @@ def normalize_receipt(r: dict) -> dict:
             }
             for item in r.get("line_items", [])
         ],
-        # pagos
         "pagos": [
             {
                 "tipo": p.get("type"),
