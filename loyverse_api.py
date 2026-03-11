@@ -8,21 +8,15 @@ from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 from loyverse import get_receipts_between, normalize_receipt, get_customer
-from json_db import obtener_factura
+from json_db import obtener_factura, nota_credito_emitida, obtener_nota_credito
 
 router = APIRouter(prefix="/api", tags=["ventas"])
 
 
-# ============================
-# UTILIDADES
-# ============================
 def parse_fecha(fecha_str: str) -> datetime:
     return datetime.fromisoformat(fecha_str.replace("Z", "+00:00"))
 
 
-# ============================
-# LISTAR VENTAS + REEMBOLSOS
-# ============================
 @router.get("/ventas")
 async def listar_ventas(
     desde: date = Query(...),
@@ -36,17 +30,13 @@ async def listar_ventas(
             content={"error": "Respuesta inválida de Loyverse"}
         )
 
-    # ============================
     # FETCH CLIENTES FALTANTES
-    # IDs únicos que tienen customer_id pero no tienen objeto customer expandido
-    # ============================
     customer_ids_faltantes = list({
         r["customer_id"]
         for r in receipts_raw
         if r.get("customer_id") and not r.get("customer")
     })
 
-    # Fetch en paralelo
     if customer_ids_faltantes:
         clientes_fetched = await asyncio.gather(
             *[get_customer(cid) for cid in customer_ids_faltantes]
@@ -59,41 +49,33 @@ async def listar_ventas(
     else:
         clientes_map = {}
 
-    # Inyectar el objeto customer en los recibos que lo necesitan
     for r in receipts_raw:
         if r.get("customer_id") and not r.get("customer"):
             cliente = clientes_map.get(r["customer_id"])
             if cliente:
                 r["customer"] = cliente
 
-    # ============================
     # NORMALIZAR
-    # ============================
     sales = []
     refunds = []
 
     for r in receipts_raw:
         normalized = normalize_receipt(r)
-
         if normalized["receipt_type"] == "SALE":
             sales.append(normalized)
         elif normalized["receipt_type"] == "REFUND":
             refunds.append(normalized)
 
-    # ============================
     # INDEXAR REEMBOLSOS POR PRODUCTO
-    # ============================
     refunds_by_product = defaultdict(list)
-
     for refund in refunds:
         for item in refund.get("items", []):
             refunds_by_product[item["nombre"]].append(refund)
 
+    # PROCESAR VENTAS y construir mapa refund_id → sale_id
+    refund_to_sale = {}
     resultado = []
 
-    # ============================
-    # PROCESAR VENTAS
-    # ============================
     for sale in sales:
         sale_date = parse_fecha(sale["fecha"])
         total_refund = 0
@@ -103,7 +85,6 @@ async def listar_ventas(
         for item in sale.get("items", []):
             qty_left = item["cantidad"]
             unit_price = item["precio_unitario"]
-
             posibles = refunds_by_product.get(item["nombre"], [])
 
             for ref in posibles:
@@ -129,6 +110,9 @@ async def listar_ventas(
                         "importe": importe,
                         "refund_receipt_id": ref["receipt_id"],
                     })
+
+                    # Guardar relación reembolso → venta original
+                    refund_to_sale[ref["receipt_id"]] = sale["receipt_id"]
 
             if qty_left > 0:
                 remaining_items.append({
@@ -160,14 +144,17 @@ async def listar_ventas(
 
         resultado.append(sale)
 
-    # ============================
-    # AGREGAR REEMBOLSOS COMO TARJETAS
-    # ============================
+    # AGREGAR REEMBOLSOS CON refund_for
     for ref in refunds:
+        sale_id = refund_to_sale.get(ref["receipt_id"])
+        nc = obtener_nota_credito(ref["receipt_id"]) if sale_id else None
+
         ref.update({
             "refund_status": "REFUND",
+            "refund_for": sale_id,        # ← la clave que faltaba
             "already_invoiced": False,
             "invoice": None,
+            "nota_credito": nc,
         })
         resultado.append(ref)
 
