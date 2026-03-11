@@ -1,14 +1,13 @@
 # loyverse_api.py
 from datetime import date, datetime
 from collections import defaultdict
-from typing import List
 
 import asyncio
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 from loyverse import get_receipts_between, normalize_receipt, get_customer
-from json_db import obtener_factura, nota_credito_emitida, obtener_nota_credito
+from json_db import obtener_factura, obtener_nota_credito
 
 router = APIRouter(prefix="/api", tags=["ventas"])
 
@@ -111,7 +110,6 @@ async def listar_ventas(
                         "refund_receipt_id": ref["receipt_id"],
                     })
 
-                    # Guardar relación reembolso → venta original
                     refund_to_sale[ref["receipt_id"]] = sale["receipt_id"]
 
             if qty_left > 0:
@@ -144,6 +142,26 @@ async def listar_ventas(
 
         resultado.append(sale)
 
+    # SEGUNDO PASE: reembolsos sin match por items → cruzar por cliente_id + factura existente
+    for ref in refunds:
+        if ref["receipt_id"] in refund_to_sale:
+            continue
+
+        ref_date = parse_fecha(ref["fecha"])
+        ref_cliente = ref.get("cliente_id")
+        ref_total = ref.get("total", 0)
+
+        for sale in sales:
+            sale_date = parse_fecha(sale["fecha"])
+            if sale_date >= ref_date:
+                continue
+            if ref_cliente and sale.get("cliente_id") != ref_cliente:
+                continue
+            if sale.get("total", 0) < ref_total:
+                continue
+            refund_to_sale[ref["receipt_id"]] = sale["receipt_id"]
+            break
+
     # AGREGAR REEMBOLSOS CON refund_for
     for ref in refunds:
         sale_id = refund_to_sale.get(ref["receipt_id"])
@@ -151,7 +169,7 @@ async def listar_ventas(
 
         ref.update({
             "refund_status": "REFUND",
-            "refund_for": sale_id,        # ← la clave que faltaba
+            "refund_for": sale_id,
             "already_invoiced": False,
             "invoice": None,
             "nota_credito": nc,
