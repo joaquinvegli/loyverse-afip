@@ -3,10 +3,11 @@ from datetime import date, datetime
 from collections import defaultdict
 from typing import List
 
+import asyncio
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
-from loyverse import get_receipts_between, normalize_receipt
+from loyverse import get_receipts_between, normalize_receipt, get_customer
 from json_db import obtener_factura
 
 router = APIRouter(prefix="/api", tags=["ventas"])
@@ -35,6 +36,39 @@ async def listar_ventas(
             content={"error": "Respuesta inválida de Loyverse"}
         )
 
+    # ============================
+    # FETCH CLIENTES FALTANTES
+    # IDs únicos que tienen customer_id pero no tienen objeto customer expandido
+    # ============================
+    customer_ids_faltantes = list({
+        r["customer_id"]
+        for r in receipts_raw
+        if r.get("customer_id") and not r.get("customer")
+    })
+
+    # Fetch en paralelo
+    if customer_ids_faltantes:
+        clientes_fetched = await asyncio.gather(
+            *[get_customer(cid) for cid in customer_ids_faltantes]
+        )
+        clientes_map = {
+            cid: data
+            for cid, data in zip(customer_ids_faltantes, clientes_fetched)
+            if data is not None
+        }
+    else:
+        clientes_map = {}
+
+    # Inyectar el objeto customer en los recibos que lo necesitan
+    for r in receipts_raw:
+        if r.get("customer_id") and not r.get("customer"):
+            cliente = clientes_map.get(r["customer_id"])
+            if cliente:
+                r["customer"] = cliente
+
+    # ============================
+    # NORMALIZAR
+    # ============================
     sales = []
     refunds = []
 
