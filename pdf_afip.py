@@ -12,11 +12,11 @@ import json
 # -----------------------------
 # PALETA DE COLORES / BRANDING
 # -----------------------------
-COLOR_PRIMARIO = Color(0.027, 0.133, 0.282)   # Azul oscuro
-COLOR_SEC1 = Color(0.976, 0.592, 0.0)         # Naranja
-COLOR_SEC2 = Color(0.113, 0.584, 0.760)       # Celeste
-COLOR_SEC3 = Color(0.937, 0.078, 0.463)       # Rosa
-COLOR_SEC4 = Color(0.875, 0.863, 0.0)         # Amarillo
+COLOR_PRIMARIO = Color(0.027, 0.133, 0.282)
+COLOR_SEC1 = Color(0.976, 0.592, 0.0)
+COLOR_SEC2 = Color(0.113, 0.584, 0.760)
+COLOR_SEC3 = Color(0.937, 0.078, 0.463)
+COLOR_SEC4 = Color(0.875, 0.863, 0.0)
 
 # -----------------------------
 # DATOS FIJOS DEL CONTRIBUYENTE
@@ -26,7 +26,7 @@ INGRESOS_BRUTOS = "20-39157186-5"
 INICIO_ACT = "01/01/2020"
 
 # -----------------------------
-# LOGO — ruta absoluta (funciona siempre en Render)
+# LOGO
 # -----------------------------
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGO_PATH = os.path.join(_BASE_DIR, "static", "logo_fixed.png")
@@ -50,7 +50,6 @@ def _wrap_text(text, max_chars=45):
     palabras = text.split(" ")
     lineas = []
     actual = ""
-
     for p in palabras:
         if len(actual) + len(p) + 1 <= max_chars:
             actual += (" " if actual else "") + p
@@ -59,26 +58,17 @@ def _wrap_text(text, max_chars=45):
             actual = p
     if actual:
         lineas.append(actual)
-
     return lineas
 
 
 # ============================================
 # QR OFICIAL AFIP (RG 4892)
 # ============================================
-def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto, fecha_cbte, total, cliente_dni):
+def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto, fecha_cbte, total, doc_tipo, doc_nro):
     try:
         fecha_iso = datetime.strptime(fecha_cbte, "%d/%m/%Y").strftime("%Y-%m-%d")
     except Exception:
         fecha_iso = datetime.now().strftime("%Y-%m-%d")
-
-    cliente_dni_str = (cliente_dni or "").strip()
-    if cliente_dni_str.isdigit():
-        tipo_doc_rec = 96
-        nro_doc_rec = int(cliente_dni_str)
-    else:
-        tipo_doc_rec = 99
-        nro_doc_rec = 0
 
     payload = {
         "ver": 1,
@@ -90,15 +80,14 @@ def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto, fecha_cbte, total, cl
         "importe": float(total),
         "moneda": "PES",
         "ctz": 1,
-        "tipoDocRec": int(tipo_doc_rec),
-        "nroDocRec": int(nro_doc_rec),
+        "tipoDocRec": int(doc_tipo),
+        "nroDocRec": int(doc_nro),
         "tipoCodAut": "E",
         "codAut": int(cae),
     }
 
     payload_str = json.dumps(payload, separators=(",", ":"))
     payload_b64 = base64.urlsafe_b64encode(payload_str.encode("utf-8")).decode("utf-8")
-
     url = f"https://www.afip.gob.ar/fe/qr/?p={payload_b64}"
 
     qr_img = qrcode.make(url)
@@ -106,6 +95,26 @@ def generar_qr_afip(cuit, pto_vta, cbte_nro, cae, cae_vto, fecha_cbte, total, cl
     qr_img.save(buf, format="PNG")
     buf.seek(0)
     return buf
+
+
+def _resolver_doc(cliente_dni: str | None, cliente_cuit: str | None) -> tuple:
+    """
+    Retorna (doc_tipo, doc_nro, doc_label) para usar en PDF y QR.
+    - CUIT/CUIL: tipo 80
+    - DNI: tipo 96
+    - Sin dato: tipo 99, nro 0
+    """
+    if cliente_cuit:
+        solo = "".join(c for c in str(cliente_cuit) if c.isdigit())
+        if solo:
+            return 80, int(solo), f"CUIT/CUIL: {_formatear_cuit_display(solo)}"
+
+    if cliente_dni:
+        solo = "".join(c for c in str(cliente_dni) if c.isdigit())
+        if solo:
+            return 96, int(solo), f"DNI: {solo}"
+
+    return 99, 0, "Consumidor Final"
 
 
 def generar_pdf_factura_c(
@@ -118,13 +127,16 @@ def generar_pdf_factura_c(
     cae: str,
     cae_vto: str,
     cliente_nombre: str,
-    cliente_dni: str,
-    items: list,
-    total: float,
+    cliente_dni: str | None,
+    cliente_cuit: str | None = None,
+    items: list = [],
+    total: float = 0.0,
 ):
     folder = "generated_pdfs"
     os.makedirs(folder, exist_ok=True)
     filename = f"{folder}/factura_C_{pto_vta:04d}_{cbte_nro:08d}.pdf"
+
+    doc_tipo, doc_nro, doc_label = _resolver_doc(cliente_dni, cliente_cuit)
 
     c = canvas.Canvas(filename, pagesize=A4)
     width, height = A4
@@ -146,7 +158,6 @@ def generar_pdf_factura_c(
     top_y = height - header_h - 20
     left = 40
 
-    # Logo
     logo_w = 70
     logo_h = 70
     logo_y = top_y - logo_h
@@ -155,20 +166,15 @@ def generar_pdf_factura_c(
         try:
             img = ImageReader(LOGO_PATH)
             c.drawImage(
-                img,
-                left,
-                logo_y,
-                width=logo_w,
-                height=logo_h,
-                preserveAspectRatio=True,
-                mask="auto",
+                img, left, logo_y,
+                width=logo_w, height=logo_h,
+                preserveAspectRatio=True, mask="auto",
             )
         except Exception as e:
             print("Error dibujando logo:", e)
     else:
         print(f"Logo no encontrado en: {LOGO_PATH}")
 
-    # Datos comercio
     tx = left + logo_w + 10
     y = top_y
 
@@ -227,11 +233,7 @@ def generar_pdf_factura_c(
     c.setFont("Helvetica", 10)
     c.drawString(left, y, f"Nombre: {cliente_nombre or 'Consumidor Final'}")
     y -= 15
-
-    if cliente_dni:
-        c.drawString(left, y, f"DNI / Doc.: {cliente_dni}")
-    else:
-        c.drawString(left, y, "DNI / Doc.: Consumidor Final")
+    c.drawString(left, y, doc_label)
 
     # -----------------------------
     # ÍTEMS
@@ -259,7 +261,6 @@ def generar_pdf_factura_c(
         c.drawRightString(330, y, f"{cant:.2f}")
         c.drawRightString(420, y, f"${precio:.2f}")
         c.drawRightString(width - left, y, f"${subtotal:.2f}")
-
         y -= 16
 
     # -----------------------------
@@ -274,17 +275,14 @@ def generar_pdf_factura_c(
     # -----------------------------
     # CAE + QR
     # -----------------------------
-    cae_txt = f"CAE Nº: {cae}"
-    vto_txt = f"Vencimiento CAE: {_formatear_fecha_cae_vto(cae_vto)}"
-
     qr_size = 110
     qr_x = width - left - qr_size
     qr_y = 80
 
     c.setFont("Helvetica-Bold", 10)
-    c.drawString(left, qr_y + qr_size - 10, cae_txt)
+    c.drawString(left, qr_y + qr_size - 10, f"CAE Nº: {cae}")
     c.setFont("Helvetica", 10)
-    c.drawString(left, qr_y + qr_size - 25, vto_txt)
+    c.drawString(left, qr_y + qr_size - 25, f"Vencimiento CAE: {_formatear_fecha_cae_vto(cae_vto)}")
     c.drawString(left, qr_y + qr_size - 40, "Comprobante autorizado por AFIP")
 
     try:
@@ -296,7 +294,8 @@ def generar_pdf_factura_c(
             cae_vto=cae_vto,
             fecha_cbte=fecha,
             total=total,
-            cliente_dni=cliente_dni,
+            doc_tipo=doc_tipo,
+            doc_nro=doc_nro,
         )
         qr_img = ImageReader(qr_buf)
         c.drawImage(qr_img, qr_x, qr_y, width=qr_size, height=qr_size)
@@ -313,8 +312,7 @@ def generar_pdf_factura_c(
     c.drawCentredString(width/2, footer_y, "Instagram: @topfundasbb")
     c.setFont("Helvetica-Oblique", 9)
     c.drawCentredString(
-        width/2,
-        footer_y - 12,
+        width/2, footer_y - 12,
         "Gracias por su compra — comprobante emitido automáticamente por el sistema de facturación de Top Fundas",
     )
 
