@@ -9,14 +9,10 @@ if not TOKEN:
     raise Exception("LOYVERSE_TOKEN no está definida en Environment Variables")
 
 
-# ============================================
-# OBTENER RECIBOS ENTRE FECHAS
-# ============================================
 async def get_receipts_between(desde, hasta):
     headers = {"Authorization": f"Bearer {TOKEN}"}
     created_at_min = desde.strftime("%Y-%m-%dT00:00:00.000Z")
     created_at_max = hasta.strftime("%Y-%m-%dT23:59:59.999Z")
-
     url = (
         f"{BASE_URL}/receipts?"
         f"limit=250"
@@ -24,22 +20,13 @@ async def get_receipts_between(desde, hasta):
         f"&created_at_max={created_at_max}"
         f"&expand=customer"
     )
-
     async with httpx.AsyncClient() as client:
         r = await client.get(url, headers=headers)
         if r.status_code != 200:
-            return {
-                "error": "Loyverse devolvió error",
-                "status": r.status_code,
-                "body": r.text,
-                "url": url,
-            }
+            return {"error": "Loyverse devolvió error", "status": r.status_code, "body": r.text, "url": url}
         return r.json().get("receipts", [])
 
 
-# ============================================
-# OBTENER DATOS DEL CLIENTE POR ID
-# ============================================
 async def get_customer(customer_id: str):
     headers = {"Authorization": f"Bearer {TOKEN}"}
     url = f"{BASE_URL}/customers/{customer_id}"
@@ -52,24 +39,13 @@ async def get_customer(customer_id: str):
         return r.json()
 
 
-# ============================================
-# CLASIFICAR DOCUMENTO (DNI o CUIT/CUIL)
-# ============================================
 def _clasificar_documento(customer: dict) -> tuple:
-    """
-    Retorna (tipo, numero_limpio) donde tipo es "cuit" o "dni", o (None, None).
-    Busca en note y customer_code.
-    - 11 dígitos → CUIT/CUIL
-    - 7 u 8 dígitos → DNI
-    """
     if not customer:
         return None, None
-
     candidatos = [
         (customer.get("note") or "").strip(),
         (customer.get("customer_code") or "").strip(),
     ]
-
     for raw in candidatos:
         if not raw:
             continue
@@ -80,13 +56,29 @@ def _clasificar_documento(customer: dict) -> tuple:
             return "cuit", solo_digitos
         if 7 <= len(solo_digitos) <= 8:
             return "dni", solo_digitos
-
     return None, None
 
 
-# ============================================
-# NORMALIZADOR DE RECIBOS
-# ============================================
+def _armar_domicilio(customer: dict) -> str | None:
+    """
+    Arma el domicilio completo desde los campos address, city, postal_code.
+    Retorna None si no hay ninguno cargado.
+    """
+    if not customer:
+        return None
+    partes = []
+    address = (customer.get("address") or "").strip()
+    city = (customer.get("city") or "").strip()
+    postal_code = (customer.get("postal_code") or "").strip()
+    if address:
+        partes.append(address)
+    if city:
+        partes.append(city)
+    if postal_code:
+        partes.append(f"CP: {postal_code}")
+    return ", ".join(partes) if partes else None
+
+
 def normalize_receipt(r: dict) -> dict:
     customer = r.get("customer") or {}
     cliente_id = r.get("customer_id")
@@ -101,11 +93,13 @@ def normalize_receipt(r: dict) -> dict:
         doc_tipo, doc_nro = _clasificar_documento(customer)
         cliente_dni = doc_nro if doc_tipo == "dni" else None
         cliente_cuit = doc_nro if doc_tipo == "cuit" else None
+        cliente_domicilio = _armar_domicilio(customer)
     else:
         cliente_nombre = "Consumidor Final"
         cliente_email = ""
         cliente_dni = None
         cliente_cuit = None
+        cliente_domicilio = None
 
     return {
         "receipt_id": r.get("receipt_number"),
@@ -118,6 +112,7 @@ def normalize_receipt(r: dict) -> dict:
         "cliente_email": cliente_email,
         "cliente_dni": cliente_dni,
         "cliente_cuit": cliente_cuit,
+        "cliente_domicilio": cliente_domicilio,
         "items": [
             {
                 "nombre": item.get("item_name"),
