@@ -1,34 +1,26 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Routers
 from loyverse_api import router as ventas_router
 from facturar_api import router as facturar_router
-from email_api import router as email_router  # ✅ agregar
+from email_api import router as email_router
+from nota_credito_api import router as nota_credito_router
 
 app = FastAPI()
 
-# ==============================
-# CORS (obligatorio para frontend)
-# ==============================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # luego se puede restringir
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ==============================
-# Rutas API
-# ==============================
-app.include_router(ventas_router)      # /api/ventas
-app.include_router(facturar_router)    # /api/facturar
-app.include_router(email_router)       # /api/enviar_email ✅
+app.include_router(ventas_router)
+app.include_router(facturar_router)
+app.include_router(email_router)
+app.include_router(nota_credito_router)
 
-# ==============================
-# Health check
-# ==============================
 @app.get("/")
 def root():
     return {"status": "ok"}
@@ -36,7 +28,7 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok"}
-    
+
 @app.get("/debug/recibo/{receipt_id}")
 async def debug_recibo(receipt_id: str):
     import httpx
@@ -46,4 +38,3 @@ async def debug_recibo(receipt_id: str):
     async with httpx.AsyncClient() as client:
         r = await client.get(url, headers={"Authorization": f"Bearer {token}"})
         return r.json()
-
