@@ -1,10 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
 from loyverse_api import router as ventas_router
 from facturar_api import router as facturar_router
 from email_api import router as email_router
 from nota_credito_api import router as nota_credito_router
+from facturas_api import router as facturas_router
 
 app = FastAPI()
 
@@ -20,6 +20,7 @@ app.include_router(ventas_router)
 app.include_router(facturar_router)
 app.include_router(email_router)
 app.include_router(nota_credito_router)
+app.include_router(facturas_router)
 
 @app.get("/")
 def root():
