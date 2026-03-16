@@ -5,6 +5,7 @@ from facturar_api import router as facturar_router
 from email_api import router as email_router
 from nota_credito_api import router as nota_credito_router
 from facturas_api import router as facturas_router
+from admin_api import router as admin_router
 
 app = FastAPI()
 
@@ -21,6 +22,7 @@ app.include_router(facturar_router)
 app.include_router(email_router)
 app.include_router(nota_credito_router)
 app.include_router(facturas_router)
+app.include_router(admin_router)
 
 @app.get("/")
 def root():
