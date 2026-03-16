@@ -13,24 +13,46 @@ async def get_receipts_between(desde, hasta):
     headers = {"Authorization": f"Bearer {TOKEN}"}
     created_at_min = desde.strftime("%Y-%m-%dT00:00:00.000Z")
     created_at_max = hasta.strftime("%Y-%m-%dT23:59:59.999Z")
-    url = (
-        f"{BASE_URL}/receipts?"
-        f"limit=250"
-        f"&created_at_min={created_at_min}"
-        f"&created_at_max={created_at_max}"
-        f"&expand=customer"
-    )
-    async with httpx.AsyncClient() as client:
-        r = await client.get(url, headers=headers)
-        if r.status_code != 200:
-            return {"error": "Loyverse devolvió error", "status": r.status_code, "body": r.text, "url": url}
-        return r.json().get("receipts", [])
+
+    all_receipts = []
+    cursor = None
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        while True:
+            url = (
+                f"{BASE_URL}/receipts?"
+                f"limit=250"
+                f"&created_at_min={created_at_min}"
+                f"&created_at_max={created_at_max}"
+                f"&expand=customer"
+            )
+            if cursor:
+                url += f"&cursor={cursor}"
+
+            r = await client.get(url, headers=headers)
+            if r.status_code != 200:
+                return {
+                    "error": "Loyverse devolvió error",
+                    "status": r.status_code,
+                    "body": r.text,
+                    "url": url,
+                }
+
+            data = r.json()
+            receipts = data.get("receipts", [])
+            all_receipts.extend(receipts)
+
+            cursor = data.get("cursor")
+            if not cursor or len(receipts) < 250:
+                break
+
+    return all_receipts
 
 
 async def get_customer(customer_id: str):
     headers = {"Authorization": f"Bearer {TOKEN}"}
     url = f"{BASE_URL}/customers/{customer_id}"
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(url, headers=headers)
         if r.status_code == 404:
             return None
@@ -60,10 +82,6 @@ def _clasificar_documento(customer: dict) -> tuple:
 
 
 def _armar_domicilio(customer: dict) -> str | None:
-    """
-    Arma el domicilio completo desde los campos address, city, postal_code.
-    Retorna None si no hay ninguno cargado.
-    """
     if not customer:
         return None
     partes = []
