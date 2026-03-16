@@ -74,7 +74,7 @@ async def resumen_admin(
 
     # ── MÉTRICAS GENERALES ──
     total_ventas = len(sales)
-    monto_total_real = sum(s["total"] or 0 for s in sales)
+    monto_total_real = sum(s["total"] or 0 for s in sales) - sum(r["total"] or 0 for r in refunds)
     monto_total_refunds = sum(r["total"] or 0 for r in refunds)
     ticket_promedio = round(monto_total_real / total_ventas, 2) if total_ventas else 0
 
