@@ -1,13 +1,15 @@
 """
-arqueo_api.py — Endpoints para arqueo de caja y retiros del propietario.
+arqueo_api.py — Endpoints para arqueo de caja, retiros del propietario y movimientos de empleados.
 
 Rutas:
-  GET  /api/arqueo/estado    — turno abierto actual (o null)
-  POST /api/arqueo/abrir     — abre un nuevo turno
-  POST /api/arqueo/cerrar    — cierra el turno (con o sin diferencia)
-  GET  /api/arqueo/historial — últimos 30 arqueos cerrados
-  POST /api/retiro           — registra un retiro (solo admin)
-  GET  /api/retiros          — lista todos los retiros
+  GET  /api/arqueo/estado          — turno abierto actual (o null)
+  POST /api/arqueo/abrir           — abre un nuevo turno
+  POST /api/arqueo/cerrar          — cierra el turno (con o sin diferencia)
+  GET  /api/arqueo/historial       — últimos 30 arqueos cerrados
+  POST /api/retiro                 — retiro del propietario (solo admin)
+  GET  /api/retiros                — lista todos los retiros del propietario
+  POST /api/arqueo/movimiento      — egreso o ingreso manual registrado por el empleado del turno
+  GET  /api/arqueo/movimientos     — movimientos del turno actual
 """
 
 import os
@@ -15,7 +17,7 @@ import json
 import time
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -36,7 +38,7 @@ BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
 
 
 # ══════════════════════════════════════════════
-# Supabase helpers (mismo patrón que google_drive_client.py)
+# Supabase helpers
 # ══════════════════════════════════════════════
 
 def _get_supabase():
@@ -54,17 +56,21 @@ def _descargar_arqueos_db() -> dict:
         url_sin_cache = f"{url}?t={int(time.time())}"
         r = httpx.get(url_sin_cache, timeout=15, follow_redirects=True)
         if r.status_code in (400, 404):
-            return {"turno_abierto": None, "arqueos": [], "retiros": []}
+            return {"turno_abierto": None, "arqueos": [], "retiros": [], "movimientos": []}
         r.raise_for_status()
         content = r.text.strip()
         if not content:
-            return {"turno_abierto": None, "arqueos": [], "retiros": []}
-        return json.loads(content)
+            return {"turno_abierto": None, "arqueos": [], "retiros": [], "movimientos": []}
+        data = json.loads(content)
+        # Migración: asegurar que exista la clave movimientos
+        if "movimientos" not in data:
+            data["movimientos"] = []
+        return data
     except json.JSONDecodeError:
-        return {"turno_abierto": None, "arqueos": [], "retiros": []}
+        return {"turno_abierto": None, "arqueos": [], "retiros": [], "movimientos": []}
     except Exception as e:
         logger.error(f"Error descargando arqueos_db: {e}")
-        return {"turno_abierto": None, "arqueos": [], "retiros": []}
+        return {"turno_abierto": None, "arqueos": [], "retiros": [], "movimientos": []}
 
 
 def _subir_arqueos_db(data: dict) -> None:
@@ -92,13 +98,18 @@ class AbrirTurnoRequest(BaseModel):
 
 class CerrarTurnoRequest(BaseModel):
     efectivo_contado: float
-    gastos: Optional[float] = 0.0
     nota: Optional[str] = ""
 
 
 class RetiroRequest(BaseModel):
     monto: float
     motivo: str
+
+
+class MovimientoRequest(BaseModel):
+    tipo: Literal["egreso", "ingreso"]
+    monto: float
+    detalle: str
 
 
 # ══════════════════════════════════════════════
@@ -110,13 +121,8 @@ def _now_arg() -> str:
 
 
 async def _ventas_efectivo_desde(desde_iso: str) -> list[dict]:
-    """
-    Trae todos los receipts con pagos en efectivo (CASH) desde `desde_iso`.
-    Incluye SALE y REFUND.
-    """
+    """Trae todos los receipts con pagos en efectivo (CASH) desde `desde_iso`. Incluye SALE y REFUND."""
     headers = {"Authorization": f"Bearer {LOYVERSE_TOKEN}"}
-
-    # Convertir timestamp Argentina a UTC para la query a Loyverse
     try:
         dt = datetime.fromisoformat(desde_iso)
         desde_utc = dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -126,24 +132,19 @@ async def _ventas_efectivo_desde(desde_iso: str) -> list[dict]:
 
     resultados = []
     cursor = None
-
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             params = {"created_at_min": desde_utc, "created_at_max": hasta_utc, "limit": 250}
             if cursor:
                 params["cursor"] = cursor
-
             resp = await client.get(f"{LOYVERSE_BASE}/receipts", headers=headers, params=params)
             if resp.status_code != 200:
                 logger.error(f"Loyverse error {resp.status_code}: {resp.text}")
                 break
-
             body = resp.json()
             for r in body.get("receipts", []):
                 payments = r.get("payments", [])
-                cash_total = sum(
-                    p.get("money_amount", 0) for p in payments if p.get("type") == "CASH"
-                )
+                cash_total = sum(p.get("money_amount", 0) for p in payments if p.get("type") == "CASH")
                 if cash_total == 0:
                     continue
                 resultados.append({
@@ -154,21 +155,15 @@ async def _ventas_efectivo_desde(desde_iso: str) -> list[dict]:
                     "total": r.get("total_money", 0),
                     "fecha": r.get("created_at", ""),
                 })
-
             cursor = body.get("cursor")
             if not cursor or len(body.get("receipts", [])) < 250:
                 break
-
     return resultados
 
 
 async def _ventas_no_efectivo_desde(desde_iso: str) -> list[dict]:
-    """
-    Trae ventas SALE del turno que tienen al menos un pago NO en efectivo.
-    Estas son las candidatas a explicar una diferencia de caja.
-    """
+    """Trae ventas SALE del turno con al menos un pago NO en efectivo (candidatas a explicar diferencia)."""
     headers = {"Authorization": f"Bearer {LOYVERSE_TOKEN}"}
-
     try:
         dt = datetime.fromisoformat(desde_iso)
         desde_utc = dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -178,17 +173,14 @@ async def _ventas_no_efectivo_desde(desde_iso: str) -> list[dict]:
 
     resultados = []
     cursor = None
-
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             params = {"created_at_min": desde_utc, "created_at_max": hasta_utc, "limit": 250}
             if cursor:
                 params["cursor"] = cursor
-
             resp = await client.get(f"{LOYVERSE_BASE}/receipts", headers=headers, params=params)
             if resp.status_code != 200:
                 break
-
             body = resp.json()
             for r in body.get("receipts", []):
                 if r.get("receipt_type") != "SALE":
@@ -206,33 +198,44 @@ async def _ventas_no_efectivo_desde(desde_iso: str) -> list[dict]:
                     "fecha": r.get("created_at", ""),
                     "metodos": list({p.get("type", "") for p in payments}),
                 })
-
             cursor = body.get("cursor")
             if not cursor or len(body.get("receipts", [])) < 250:
                 break
-
     return resultados
 
 
-def _calcular_resumen(efectivo_inicial: float, ventas: list[dict], retiros: list[dict]) -> dict:
-    ingresos = sum(v["total_efectivo"] for v in ventas if v["tipo"] == "SALE")
+def _calcular_resumen(
+    efectivo_inicial: float,
+    ventas: list[dict],
+    retiros: list[dict],
+    movimientos: list[dict],
+) -> dict:
+    ingresos_ventas = sum(v["total_efectivo"] for v in ventas if v["tipo"] == "SALE")
     egresos_reembolsos = sum(v["total_efectivo"] for v in ventas if v["tipo"] == "REFUND")
     egresos_retiros = sum(r["monto"] for r in retiros)
-    esperado = efectivo_inicial + ingresos - egresos_reembolsos - egresos_retiros
+    ingresos_manuales = sum(m["monto"] for m in movimientos if m["tipo"] == "ingreso")
+    egresos_manuales = sum(m["monto"] for m in movimientos if m["tipo"] == "egreso")
+
+    esperado = (
+        efectivo_inicial
+        + ingresos_ventas
+        - egresos_reembolsos
+        - egresos_retiros
+        + ingresos_manuales
+        - egresos_manuales
+    )
     return {
         "efectivo_inicial": efectivo_inicial,
-        "ingresos_efectivo": round(ingresos, 2),
+        "ingresos_efectivo": round(ingresos_ventas, 2),
         "egresos_reembolsos": round(egresos_reembolsos, 2),
         "egresos_retiros": round(egresos_retiros, 2),
+        "ingresos_manuales": round(ingresos_manuales, 2),
+        "egresos_manuales": round(egresos_manuales, 2),
         "esperado": round(esperado, 2),
     }
 
 
 def _buscar_combinaciones(diferencia: float, ventas_no_efectivo: list[dict], tolerancia: float = 1.0) -> list[dict]:
-    """
-    Busca combinaciones de 1-3 ventas no-efectivo cuyo total se acerque a abs(diferencia).
-    Retorna hasta 5 combinaciones candidatas.
-    """
     objetivo = abs(diferencia)
     candidatos = []
     elegibles = sorted(ventas_no_efectivo, key=lambda v: abs(v["total_no_efectivo"] - objetivo))
@@ -248,7 +251,6 @@ def _buscar_combinaciones(diferencia: float, ventas_no_efectivo: list[dict], tol
         buscar(idx + 1, acum, combo)
 
     buscar(0, 0.0, [])
-
     seen = set()
     result = []
     for combo in candidatos:
@@ -261,14 +263,12 @@ def _buscar_combinaciones(diferencia: float, ventas_no_efectivo: list[dict], tol
             })
         if len(result) >= 5:
             break
-
     return result
 
 
 async def _enviar_mail_diferencia(empleado: str, diferencia: float, resumen: dict, turno_id: str):
     signo = "SOBRANTE" if diferencia > 0 else "FALTANTE"
     monto_fmt = f"${abs(diferencia):,.2f}"
-
     asunto = f"⚠️ Arqueo con diferencia — {empleado} — {signo} {monto_fmt}"
     cuerpo = f"""Arqueo de caja cerrado con diferencia.
 
@@ -281,6 +281,8 @@ Efectivo inicial:      ${resumen['efectivo_inicial']:,.2f}
 Ingresos efectivo:     ${resumen['ingresos_efectivo']:,.2f}
 Egresos reembolsos:    ${resumen['egresos_reembolsos']:,.2f}
 Egresos retiros:       ${resumen['egresos_retiros']:,.2f}
+Ingresos manuales:     ${resumen['ingresos_manuales']:,.2f}
+Egresos manuales:      ${resumen['egresos_manuales']:,.2f}
 ─────────────────────────────────────────
 Esperado en caja:      ${resumen['esperado']:,.2f}
 Contado por empleado:  ${resumen.get('contado', 0):,.2f}
@@ -296,14 +298,9 @@ Revisá los comprobantes sugeridos en la app para identificar el origen de la di
         "textContent": cuerpo,
     }
     headers_brevo = {"api-key": BREVO_API_KEY, "Content-Type": "application/json"}
-
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(
-                "https://api.brevo.com/v3/smtp/email",
-                json=payload,
-                headers=headers_brevo,
-            )
+            resp = await client.post("https://api.brevo.com/v3/smtp/email", json=payload, headers=headers_brevo)
             if resp.status_code not in (200, 201):
                 logger.error(f"Brevo error {resp.status_code}: {resp.text}")
     except Exception as e:
@@ -319,7 +316,6 @@ async def get_estado_arqueo():
     """Devuelve el turno abierto. Si no hay, sugiere el efectivo del último cierre."""
     db = _descargar_arqueos_db()
     turno = db.get("turno_abierto")
-
     if not turno:
         arqueos = db.get("arqueos", [])
         efectivo_sugerido = None
@@ -327,7 +323,6 @@ async def get_estado_arqueo():
             ultimo = sorted(arqueos, key=lambda a: a.get("fecha_cierre", ""))[-1]
             efectivo_sugerido = ultimo.get("efectivo_contado")
         return {"turno_abierto": None, "efectivo_inicial_sugerido": efectivo_sugerido}
-
     return {"turno_abierto": turno}
 
 
@@ -336,12 +331,9 @@ async def abrir_turno(req: AbrirTurnoRequest):
     """Abre un nuevo turno de caja."""
     if not req.empleado.strip():
         raise HTTPException(status_code=400, detail="El nombre del empleado es obligatorio.")
-
     db = _descargar_arqueos_db()
-
     if db.get("turno_abierto"):
         raise HTTPException(status_code=400, detail="Ya hay un turno abierto. Cerralo primero.")
-
     turno_id = f"T-{datetime.now(ARGENTINA).strftime('%Y%m%d%H%M%S')}"
     turno = {
         "turno_id": turno_id,
@@ -351,15 +343,57 @@ async def abrir_turno(req: AbrirTurnoRequest):
     }
     db["turno_abierto"] = turno
     _subir_arqueos_db(db)
-
     return {"ok": True, "turno": turno}
+
+
+@router.post("/api/arqueo/movimiento")
+async def registrar_movimiento(req: MovimientoRequest):
+    """
+    Registra un egreso o ingreso manual durante el turno abierto.
+    El nombre del empleado se toma del turno abierto automáticamente.
+    """
+    if req.monto <= 0:
+        raise HTTPException(status_code=400, detail="El monto debe ser mayor a 0.")
+    if not req.detalle.strip():
+        raise HTTPException(status_code=400, detail="El detalle es obligatorio.")
+
+    db = _descargar_arqueos_db()
+    turno = db.get("turno_abierto")
+    if not turno:
+        raise HTTPException(status_code=400, detail="No hay turno abierto. Abrí un turno primero.")
+
+    movimiento = {
+        "mov_id": f"M-{datetime.now(ARGENTINA).strftime('%Y%m%d%H%M%S')}",
+        "tipo": req.tipo,                    # "egreso" | "ingreso"
+        "monto": req.monto,
+        "detalle": req.detalle.strip(),
+        "empleado": turno["empleado"],       # tomado del turno abierto
+        "turno_id": turno["turno_id"],
+        "fecha": _now_arg(),
+    }
+    db["movimientos"].append(movimiento)
+    _subir_arqueos_db(db)
+    return {"ok": True, "movimiento": movimiento}
+
+
+@router.get("/api/arqueo/movimientos")
+async def get_movimientos_turno():
+    """Devuelve los movimientos del turno actualmente abierto."""
+    db = _descargar_arqueos_db()
+    turno = db.get("turno_abierto")
+    todos = db.get("movimientos", [])
+    if not turno:
+        return {"movimientos": [], "turno_abierto": False}
+    turno_id = turno["turno_id"]
+    del_turno = [m for m in todos if m.get("turno_id") == turno_id]
+    return {"movimientos": del_turno, "turno_abierto": True}
 
 
 @router.post("/api/arqueo/cerrar")
 async def cerrar_turno(req: CerrarTurnoRequest):
     """
     Cierra el turno abierto.
-    Calcula diferencia, sugiere comprobantes candidatos, envía mail si corresponde.
+    Calcula diferencia incluyendo movimientos manuales, sugiere comprobantes, envía mail si corresponde.
     """
     db = _descargar_arqueos_db()
     turno = db.get("turno_abierto")
@@ -369,18 +403,19 @@ async def cerrar_turno(req: CerrarTurnoRequest):
     desde_iso = turno["fecha_apertura"]
     empleado = turno["empleado"]
     efectivo_inicial = turno["efectivo_inicial"]
+    turno_id = turno["turno_id"]
 
-    # Ventas en efectivo del turno
+    # Ventas en efectivo del turno desde Loyverse
     ventas_efectivo = await _ventas_efectivo_desde(desde_iso)
 
-    # Retiros del turno
-    retiros_turno = [
-        r for r in db.get("retiros", [])
-        if r.get("fecha", "") >= desde_iso
-    ]
+    # Retiros del propietario durante este turno
+    retiros_turno = [r for r in db.get("retiros", []) if r.get("fecha", "") >= desde_iso]
+
+    # Movimientos manuales del empleado durante este turno
+    movimientos_turno = [m for m in db.get("movimientos", []) if m.get("turno_id") == turno_id]
 
     # Resumen y diferencia
-    resumen = _calcular_resumen(efectivo_inicial, ventas_efectivo, retiros_turno)
+    resumen = _calcular_resumen(efectivo_inicial, ventas_efectivo, retiros_turno, movimientos_turno)
     resumen["contado"] = req.efectivo_contado
     diferencia = round(req.efectivo_contado - resumen["esperado"], 2)
     resumen["diferencia"] = diferencia
@@ -393,17 +428,17 @@ async def cerrar_turno(req: CerrarTurnoRequest):
 
     # Guardar arqueo cerrado
     arqueo_cerrado = {
-        "turno_id": turno["turno_id"],
+        "turno_id": turno_id,
         "empleado": empleado,
         "fecha_apertura": turno["fecha_apertura"],
         "fecha_cierre": _now_arg(),
         "efectivo_inicial": efectivo_inicial,
         "efectivo_contado": req.efectivo_contado,
-        "gastos": req.gastos or 0.0,
         "nota": req.nota or "",
         "resumen": resumen,
         "diferencia": diferencia,
         "retiros_turno": retiros_turno,
+        "movimientos_turno": movimientos_turno,
         "ventas_efectivo_count": len([v for v in ventas_efectivo if v["tipo"] == "SALE"]),
         "reembolsos_efectivo_count": len([v for v in ventas_efectivo if v["tipo"] == "REFUND"]),
     }
@@ -414,9 +449,8 @@ async def cerrar_turno(req: CerrarTurnoRequest):
     db["turno_abierto"] = None
     _subir_arqueos_db(db)
 
-    # Mail al propietario si hay diferencia
     if abs(diferencia) > 0.5:
-        await _enviar_mail_diferencia(empleado, diferencia, resumen, turno["turno_id"])
+        await _enviar_mail_diferencia(empleado, diferencia, resumen, turno_id)
 
     return {
         "ok": True,
@@ -430,17 +464,14 @@ async def cerrar_turno(req: CerrarTurnoRequest):
 async def get_historial_arqueos():
     db = _descargar_arqueos_db()
     arqueos = db.get("arqueos", [])
-    return {
-        "arqueos": sorted(arqueos, key=lambda a: a.get("fecha_cierre", ""), reverse=True)[:30]
-    }
+    return {"arqueos": sorted(arqueos, key=lambda a: a.get("fecha_cierre", ""), reverse=True)[:30]}
 
 
 @router.post("/api/retiro")
 async def registrar_retiro(req: RetiroRequest):
-    """Registra un retiro de caja. Validación de admin en el frontend."""
+    """Registra un retiro del propietario. Validación de admin en el frontend."""
     if req.monto <= 0:
         raise HTTPException(status_code=400, detail="El monto debe ser mayor a 0.")
-
     db = _descargar_arqueos_db()
     retiro = {
         "retiro_id": f"R-{datetime.now(ARGENTINA).strftime('%Y%m%d%H%M%S')}",
@@ -452,7 +483,6 @@ async def registrar_retiro(req: RetiroRequest):
         db["retiros"] = []
     db["retiros"].append(retiro)
     _subir_arqueos_db(db)
-
     return {"ok": True, "retiro": retiro}
 
 
@@ -460,6 +490,4 @@ async def registrar_retiro(req: RetiroRequest):
 async def get_retiros():
     db = _descargar_arqueos_db()
     retiros = db.get("retiros", [])
-    return {
-        "retiros": sorted(retiros, key=lambda r: r.get("fecha", ""), reverse=True)
-    }
+    return {"retiros": sorted(retiros, key=lambda r: r.get("fecha", ""), reverse=True)}
