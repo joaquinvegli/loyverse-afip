@@ -56,6 +56,15 @@ def _first_present(data: dict, keys: list[str]):
     return None
 
 
+def _in_range(iso_value: str | None, start_utc: str, end_utc: str) -> bool:
+    dt = _parse_dt(iso_value)
+    start_dt = _parse_dt(start_utc)
+    end_dt = _parse_dt(end_utc)
+    if not dt or not start_dt or not end_dt:
+        return False
+    return start_dt <= dt <= end_dt
+
+
 async def _fetch_loyverse_shifts(desde: date, hasta: date) -> dict:
     headers = {"Authorization": f"Bearer {TOKEN}"}
     inicio_utc, fin_utc = _to_utc_range(desde, hasta)
@@ -94,11 +103,55 @@ async def _fetch_loyverse_shifts(desde: date, hasta: date) -> dict:
 
                 cursor = body.get("cursor")
                 if not cursor or len(page_shifts) < 250:
-                    return {"attempt": attempt_name, "shifts": shifts}
+                    filtered = [
+                        shift for shift in shifts
+                        if _in_range(
+                            _first_present(shift, ["opened_at", "opening_time", "open_time", "created_at"]),
+                            inicio_utc,
+                            fin_utc,
+                        )
+                    ]
+                    return {
+                        "attempt": attempt_name,
+                        "shifts": filtered,
+                        "raw_count": len(shifts),
+                        "filtered_locally": len(filtered) != len(shifts),
+                    }
 
             last_error = first_page_error
 
     return {"error": last_error or {"message": "No se pudo consultar Loyverse shifts"}}
+
+
+def _name_from_employee_obj(employee: dict | None) -> str | None:
+    if not employee:
+        return None
+    full_name = (
+        employee.get("name")
+        or f"{employee.get('first_name', '')} {employee.get('last_name', '')}".strip()
+        or employee.get("email")
+    )
+    return full_name or None
+
+
+def _employee_from_shift(shift: dict, employees_map: dict) -> tuple[str | None, str]:
+    for key in ["opened_by_employee", "closed_by_employee", "employee"]:
+        value = shift.get(key)
+        if isinstance(value, dict):
+            employee_id = value.get("id") or value.get("employee_id")
+            employee_name = _name_from_employee_obj(value)
+            if employee_id or employee_name:
+                return employee_id, employee_name or employees_map.get(employee_id, "Sin asignar")
+        elif isinstance(value, str) and value:
+            return value, employees_map.get(value, "Sin asignar")
+
+    employee_id = _first_present(shift, [
+        "employee_id",
+        "opened_by_employee_id",
+        "closed_by_employee_id",
+        "cashier_id",
+    ])
+    return employee_id, employees_map.get(employee_id, "Sin asignar")
 
 
 def _normalizar_shift(shift: dict, employees_map: dict) -> dict:
@@ -110,18 +163,13 @@ def _normalizar_shift(shift: dict, employees_map: dict) -> dict:
     if opened_dt and closed_dt:
         hours = round((closed_dt - opened_dt).total_seconds() / 3600, 2)
 
-    employee_id = _first_present(shift, [
-        "employee_id",
-        "opened_by_employee_id",
-        "closed_by_employee_id",
-        "cashier_id",
-    ])
+    employee_id, employee_name = _employee_from_shift(shift, employees_map)
     pos_id = _first_present(shift, ["pos_device_id", "store_id"])
 
     return {
         "shift_id": _first_present(shift, ["id", "shift_id"]),
         "employee_id": employee_id,
-        "employee_name": employees_map.get(employee_id, "Sin asignar"),
+        "employee_name": employee_name,
         "pos_id": pos_id,
         "opened_at": opened_at,
         "closed_at": closed_at,
@@ -161,6 +209,8 @@ async def turnos_loyverse(
         "ok": True,
         "source": "loyverse_shifts",
         "attempt": result["attempt"],
+        "raw_count": result.get("raw_count", len(result["shifts"])),
+        "filtered_locally": result.get("filtered_locally", False),
         "desde": desde.isoformat(),
         "hasta": hasta.isoformat(),
         "total_shifts": len(normalized),
