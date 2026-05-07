@@ -1,11 +1,15 @@
 # admin_api.py
 from datetime import date, datetime, timedelta, timezone
 from collections import defaultdict
+import json
+import time
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 import asyncio
 import os
 import httpx
+from pydantic import BaseModel
+from supabase import create_client
 
 from loyverse import get_receipts_between, normalize_receipt, get_customer
 
@@ -14,6 +18,15 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 BASE_URL = "https://api.loyverse.com/v1.0"
 TOKEN = os.environ.get("LOYVERSE_TOKEN")
 ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY")
+SUPABASE_BUCKET = "facturas"
+SUELDOS_DB_PATH = "db/sueldos_db.json"
+
+EMPLOYEE_NAME_MAP = {
+    "4c802b1a-6219-48b6-b7bc-8b9f674387cc": "Amparo",
+    "56bdd969-f76a-4d1b-9119-367c1031965a": "Miranda",
+    "ba7a64a1-9555-4344-b614-d420d1401340": "Agustina",
+    "99da6a5f-3a40-4691-9077-501a5205a891": "Propietario",
+}
 
 DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 
@@ -22,6 +35,120 @@ def _require_admin_key(x_admin_key: str | None) -> None:
         raise HTTPException(status_code=503, detail="Falta configurar ADMIN_API_KEY en el backend.")
     if x_admin_key != ADMIN_API_KEY:
         raise HTTPException(status_code=401, detail="Clave admin invalida.")
+
+
+class SalaryRequest(BaseModel):
+    employee_id: str
+    hourly_rate: float
+
+
+class ShiftOverrideRequest(BaseModel):
+    shift_id: str
+    employee_id: str
+    employee_name: str | None = None
+    note: str | None = ""
+
+
+def _get_supabase():
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        raise RuntimeError("Faltan SUPABASE_URL o SUPABASE_KEY")
+    return create_client(url, key)
+
+
+def _default_sueldos_db() -> dict:
+    return {
+        "employee_names": EMPLOYEE_NAME_MAP.copy(),
+        "hourly_rates": {},
+        "shift_overrides": {},
+    }
+
+
+def _load_sueldos_db() -> dict:
+    try:
+        supabase = _get_supabase()
+        url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(SUELDOS_DB_PATH)
+        response = httpx.get(f"{url}?t={int(time.time())}", timeout=15, follow_redirects=True)
+        if response.status_code in (400, 404):
+            return _default_sueldos_db()
+        response.raise_for_status()
+        data = json.loads(response.text.strip() or "{}")
+    except Exception:
+        data = _default_sueldos_db()
+
+    defaults = _default_sueldos_db()
+    for key, value in defaults.items():
+        if key not in data or not isinstance(data[key], type(value)):
+            data[key] = value
+    data["employee_names"] = {**EMPLOYEE_NAME_MAP, **data.get("employee_names", {})}
+    return data
+
+
+def _save_sueldos_db(data: dict) -> None:
+    supabase = _get_supabase()
+    payload = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+    supabase.storage.from_(SUPABASE_BUCKET).upload(
+        path=SUELDOS_DB_PATH,
+        file=payload,
+        file_options={"content-type": "application/json", "upsert": "true"},
+    )
+
+
+def _to_argentina_parts(iso_value: str | None) -> dict:
+    dt = _parse_dt(iso_value)
+    if not dt:
+        return {"date": "", "time": ""}
+    local = dt.astimezone(timezone(timedelta(hours=-3)))
+    return {
+        "date": local.strftime("%Y-%m-%d"),
+        "time": local.strftime("%H:%M"),
+    }
+
+
+def _apply_salary_data(shift: dict, sueldos_db: dict) -> dict:
+    override = sueldos_db.get("shift_overrides", {}).get(shift["shift_id"])
+    original_employee_id = shift.get("employee_id")
+    original_employee_name = sueldos_db["employee_names"].get(original_employee_id, shift.get("employee_name") or "Sin asignar")
+
+    if override:
+        employee_id = override.get("employee_id") or original_employee_id
+        employee_name = override.get("employee_name") or sueldos_db["employee_names"].get(employee_id, "Sin asignar")
+    else:
+        employee_id = original_employee_id
+        employee_name = original_employee_name
+
+    hourly_rate = float(sueldos_db.get("hourly_rates", {}).get(employee_id, 0) or 0)
+    hours = float(shift.get("hours") or 0)
+    opened = _to_argentina_parts(shift.get("opened_at"))
+    closed = _to_argentina_parts(shift.get("closed_at"))
+
+    return {
+        **shift,
+        "employee_id": employee_id,
+        "employee_name": employee_name,
+        "original_employee_id": original_employee_id,
+        "original_employee_name": original_employee_name,
+        "override": override,
+        "date": opened["date"],
+        "opened_time": opened["time"],
+        "closed_time": closed["time"],
+        "hourly_rate": hourly_rate,
+        "pay": round(hours * hourly_rate, 2),
+    }
+
+
+def _summarize_sueldos(shifts: list[dict], sueldos_db: dict) -> list[dict]:
+    summary = defaultdict(lambda: {"employee_id": "", "employee_name": "", "shifts": 0, "hours": 0.0, "hourly_rate": 0.0, "pay": 0.0})
+    for shift in shifts:
+        employee_id = shift.get("employee_id") or "sin_asignar"
+        summary[employee_id]["employee_id"] = employee_id
+        summary[employee_id]["employee_name"] = shift.get("employee_name") or "Sin asignar"
+        summary[employee_id]["shifts"] += 1
+        summary[employee_id]["hours"] = round(summary[employee_id]["hours"] + float(shift.get("hours") or 0), 2)
+        summary[employee_id]["hourly_rate"] = float(sueldos_db.get("hourly_rates", {}).get(employee_id, 0) or 0)
+        summary[employee_id]["pay"] = round(summary[employee_id]["pay"] + float(shift.get("pay") or 0), 2)
+    return sorted(summary.values(), key=lambda item: item["employee_name"])
 
 
 async def get_employees() -> dict:
@@ -228,6 +355,81 @@ async def turnos_loyverse(
         "turnos": normalized,
         "por_empleado": sorted(by_employee.values(), key=lambda x: x["employee_name"]),
     }
+
+
+@router.get("/sueldos")
+async def sueldos_admin(
+    desde: date = Query(...),
+    hasta: date = Query(...),
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
+    _require_admin_key(x_admin_key)
+    result = await _fetch_loyverse_shifts(desde, hasta)
+    if result.get("error"):
+        return JSONResponse(status_code=502, content={
+            "ok": False,
+            "source": "loyverse_shifts",
+            "error": result["error"],
+        })
+
+    employees_map = await get_employees()
+    sueldos_db = _load_sueldos_db()
+    normalized = [_normalizar_shift(s, employees_map) for s in result["shifts"]]
+    shifts = [_apply_salary_data(s, sueldos_db) for s in normalized]
+
+    days = defaultdict(list)
+    for shift in sorted(shifts, key=lambda s: (s.get("date", ""), s.get("opened_time", ""))):
+        days[shift.get("date", "")].append(shift)
+
+    return {
+        "ok": True,
+        "source": "loyverse_shifts",
+        "desde": desde.isoformat(),
+        "hasta": hasta.isoformat(),
+        "employee_names": sueldos_db["employee_names"],
+        "hourly_rates": sueldos_db["hourly_rates"],
+        "turnos": shifts,
+        "days": dict(days),
+        "resumen": _summarize_sueldos(shifts, sueldos_db),
+    }
+
+
+@router.post("/sueldos/salario")
+async def guardar_salario(
+    req: SalaryRequest,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
+    _require_admin_key(x_admin_key)
+    if req.hourly_rate < 0:
+        raise HTTPException(status_code=400, detail="El salario por hora no puede ser negativo.")
+    db = _load_sueldos_db()
+    db["hourly_rates"][req.employee_id] = req.hourly_rate
+    if req.employee_id in EMPLOYEE_NAME_MAP:
+        db["employee_names"][req.employee_id] = EMPLOYEE_NAME_MAP[req.employee_id]
+    _save_sueldos_db(db)
+    return {"ok": True, "hourly_rates": db["hourly_rates"]}
+
+
+@router.post("/sueldos/override")
+async def guardar_override_turno(
+    req: ShiftOverrideRequest,
+    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
+):
+    _require_admin_key(x_admin_key)
+    if not req.shift_id.strip():
+        raise HTTPException(status_code=400, detail="Falta shift_id.")
+    if not req.employee_id.strip():
+        raise HTTPException(status_code=400, detail="Falta employee_id.")
+    db = _load_sueldos_db()
+    employee_name = req.employee_name or db["employee_names"].get(req.employee_id) or EMPLOYEE_NAME_MAP.get(req.employee_id) or "Sin asignar"
+    db["shift_overrides"][req.shift_id] = {
+        "employee_id": req.employee_id,
+        "employee_name": employee_name,
+        "note": req.note or "",
+        "updated_at": datetime.now(timezone(timedelta(hours=-3))).isoformat(),
+    }
+    _save_sueldos_db(db)
+    return {"ok": True, "override": db["shift_overrides"][req.shift_id]}
 
 
 @router.get("/resumen")
