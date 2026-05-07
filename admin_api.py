@@ -1,7 +1,7 @@
 # admin_api.py
 from datetime import date, datetime, timedelta, timezone
 from collections import defaultdict
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 import asyncio
 import os
@@ -13,16 +13,8 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 BASE_URL = "https://api.loyverse.com/v1.0"
 TOKEN = os.environ.get("LOYVERSE_TOKEN")
-ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY")
 
 DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
-
-def _require_admin_key(x_admin_key: str | None) -> None:
-    if not ADMIN_API_KEY:
-        raise HTTPException(status_code=503, detail="Falta configurar ADMIN_API_KEY en el backend.")
-    if x_admin_key != ADMIN_API_KEY:
-        raise HTTPException(status_code=401, detail="Clave admin invalida.")
-
 
 async def get_employees() -> dict:
     """Retorna dict {employee_id: nombre}"""
@@ -190,13 +182,11 @@ def _normalizar_shift(shift: dict, employees_map: dict) -> dict:
 async def turnos_loyverse(
     desde: date = Query(...),
     hasta: date = Query(...),
-    x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
 ):
     """
     Consulta turnos de caja cerrados de Loyverse para validar si sirven como base
     de calculo de horas trabajadas. No modifica facturacion ni DB local.
     """
-    _require_admin_key(x_admin_key)
     result = await _fetch_loyverse_shifts(desde, hasta)
     if result.get("error"):
         return JSONResponse(status_code=502, content={
